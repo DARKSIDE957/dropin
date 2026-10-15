@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.dropin.Dropin</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Dropin</name>
+  <summary>Install Linux apps from packages or URLs without the terminal</summary>
+  <developer id="io.dropin">
+    <name>Dropin Maintainers</name>
+  </developer>
+  <description>
+    <p>
+      Dropin installs desktop applications on Linux by drag-and-drop or from a
+      download / GitHub release URL. It detects AppImage, DEB, RPM, Flatpak, and
+      portable archives, checks integrity, and guides a safe install.
+    </p>
+    <p>
+      Track apps installed through Dropin to launch them, check for upstream
+      updates, and uninstall cleanly. The interface follows your system light or
+      dark theme.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.dropin.Dropin.desktop</launchable>
+  <url type="homepage">https://github.com/DARKSIDE957/dropin</url>
+  <url type="bugtracker">https://github.com/DARKSIDE957/dropin/issues</url>
+  <url type="vcs-browser">https://github.com/DARKSIDE957/dropin</url>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>System</category>
+    <category>PackageManager</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>installer</keyword>
+    <keyword>appimage</keyword>
+    <keyword>deb</keyword>
+    <keyword>rpm</keyword>
+    <keyword>flatpak</keyword>
+    <keyword>update</keyword>
+  </keywords>
+  <provides>
+    <binary>dropin</binary>
+    <id>io.dropin.Dropin.desktop</id>
+  </provides>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <releases>
+    <release version="1.0.1" date="2026-10-15">
+      <description>
+        <p>Integrity checks, system theme matching, and Settings layout fixes.</p>
+        <ul>
+          <li>HTTPS, SHA-256, and package content verification on downloads</li>
+          <li>Clearer update checks with audit log entries</li>
+          <li>UI surfaces follow the desktop Window palette</li>
+        </ul>
+      </description>
+    </release>
+    <release version="1.0.0" date="2026-10-15">
+      <description>
+        <p>Initial release: drag-and-drop and URL installs for AppImage, DEB, RPM, Flatpak, and archives.</p>
+      </description>
+    </release>
+  </releases>
+</component>

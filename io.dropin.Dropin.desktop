@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Dropin
+GenericName=Application Installer
+Comment=Universal Linux Application Installer & Update Manager
+Exec=dropin %U
+Icon=io.dropin.Dropin
+Terminal=false
+Categories=Utility;PackageManager;Settings;
+StartupNotify=true
+MimeType=application/vnd.appimage;application/vnd.debian.binary-package;application/x-rpm;application/vnd.flatpak.ref;
+Keywords=installer;package;appimage;deb;rpm;flatpak;update;
+X-Purism-FormFactor=Workstation;Mobile;

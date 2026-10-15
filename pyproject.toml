@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dropin"
+version = "1.0.1"
+description = "Universal Linux Application Installer & Update Manager"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Dropin Developers", email = "support@dropin.io"}
+]
+dependencies = [
+    "PySide6>=6.5.0",
+    "packaging>=21.0"
+]
+
+[project.scripts]
+dropin = "dropin.__main__:main"
+
+[project.gui-scripts]
+dropin-gui = "dropin.__main__:main"
