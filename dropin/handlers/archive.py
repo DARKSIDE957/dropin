@@ -203,14 +203,21 @@ class ArchiveHandler(BaseHandler):
         exec_path = self._find_primary_executable(dest_dir, info.name)
         if exec_path:
             secure_file_permissions(str(exec_path), is_executable=True)
+        else:
+            return InstallResult(
+                success=False,
+                message="Could not find a launchable application inside this archive.",
+                error_details=f"Extracted to {dest_dir}, but no suitable executable was found.",
+            )
 
         if progress_callback:
             progress_callback(80, "Creating desktop launcher...")
 
         app_id = f"dropin-archive-{safe_name.lower()}"
-        launcher_path = None
-        if exec_path:
-            launcher_path = self._create_launcher(app_id, info.name, exec_path)
+        icon_path = self._find_icon(dest_dir, exec_path)
+        launcher_path = self._create_launcher(
+            app_id, info.name, exec_path, icon_path=icon_path
+        )
 
         if progress_callback:
             progress_callback(100, "Installation complete.")
@@ -221,7 +228,8 @@ class ArchiveHandler(BaseHandler):
             app_id=app_id,
             installed_path=str(dest_dir),
             launcher_path=str(launcher_path) if launcher_path else None,
-            launch_command=str(exec_path) if exec_path else None
+            launch_command=str(exec_path),
+            icon_path=icon_path,
         )
 
     def uninstall(self, app: InstalledApp) -> bool:
@@ -283,29 +291,161 @@ class ArchiveHandler(BaseHandler):
         name = name.replace("-", " ").replace("_", " ").strip()
         return name.title() if name else "Portable Application"
 
-    def _find_primary_executable(self, dest_dir: Path, app_name: str) -> Optional[Path]:
-        norm_name = app_name.lower().replace(" ", "")
-        candidates = []
-        for p in dest_dir.rglob("*"):
-            if p.is_file() and not p.name.endswith((".txt", ".md", ".json", ".png", ".svg", ".h", ".c")):
-                if norm_name in p.name.lower():
-                    return p
-                candidates.append(p)
-        return candidates[0] if candidates else None
+    # Helper/tool scripts that live next to the real app launcher (e.g. JetBrains).
+    _UTILITY_SCRIPT_NAMES = frozenset({
+        "format.sh",
+        "inspect.sh",
+        "ltedit.sh",
+        "profiler.sh",
+        "game-tools.sh",
+        "fsnotifier",
+        "restarter",
+        "appletviewer.policy",
+    })
 
-    def _create_launcher(self, app_id: str, name: str, exec_path: Path) -> Optional[Path]:
+    # Well-known primary launchers for common portable Linux apps.
+    _PREFERRED_LAUNCHER_NAMES = (
+        "studio.sh",
+        "idea.sh",
+        "clion.sh",
+        "pycharm.sh",
+        "webstorm.sh",
+        "phpstorm.sh",
+        "rider.sh",
+        "goland.sh",
+        "rubymine.sh",
+        "datagrip.sh",
+        "appimage",
+        "AppRun",
+    )
+
+    def _find_primary_executable(self, dest_dir: Path, app_name: str) -> Optional[Path]:
+        """Pick the real app launcher, not the first random file in the tree."""
+        skip_suffixes = (
+            ".txt", ".md", ".json", ".png", ".svg", ".h", ".c", ".jar", ".so",
+            ".dylib", ".dll", ".properties", ".xml", ".html", ".css", ".js",
+            ".py", ".pyc", ".class", ".o", ".a", ".db", ".vmoptions", ".policy",
+            ".ico", ".icns", ".gif", ".jpg", ".jpeg", ".webp", ".ttf", ".otf",
+        )
+        tokens = [t for t in re.split(r"[\s_\-]+", app_name.lower()) if len(t) > 2]
+        # Drop noisy release tokens so "Android Studio Rabbit1" still matches studio.sh
+        noise = {"linux", "win", "windows", "mac", "macos", "portable", "bin", "x86", "amd64"}
+        tokens = [t for t in tokens if t not in noise and not t[0].isdigit()]
+
+        scored: List[tuple[int, Path]] = []
+        for p in dest_dir.rglob("*"):
+            if not p.is_file():
+                continue
+            name = p.name
+            lower = name.lower()
+            if lower in self._UTILITY_SCRIPT_NAMES:
+                continue
+            if any(lower.endswith(suf) for suf in skip_suffixes):
+                continue
+            # Skip deep plugin/tool trees; prefer top-level bin/ launchers.
+            parts_lower = [x.lower() for x in p.parts]
+            if any(x in parts_lower for x in ("plugins", "lib", "jbr", "jre", "helpers", "lldb")):
+                # Still allow a preferred launcher if somehow nested; otherwise skip.
+                if lower not in {n.lower() for n in self._PREFERRED_LAUNCHER_NAMES}:
+                    continue
+
+            score = 0
+            if lower in {n.lower() for n in self._PREFERRED_LAUNCHER_NAMES}:
+                score += 100
+            if lower.endswith(".sh"):
+                score += 40
+            # Executable bit
+            try:
+                if os.access(p, os.X_OK):
+                    score += 25
+            except OSError:
+                pass
+            # Lives in a bin/ directory (Android Studio, many portables)
+            if len(p.parts) >= 2 and p.parts[-2].lower() == "bin":
+                score += 30
+            # Name shares tokens with the app (studio ↔ Android Studio)
+            stem = Path(lower).stem.replace("-", "").replace("_", "")
+            for tok in tokens:
+                tok_c = tok.replace("-", "").replace("_", "")
+                if tok_c and tok_c in stem:
+                    score += 20
+            # Bare binary named like the product (e.g. bin/studio)
+            if "." not in name and any(tok in lower for tok in tokens):
+                score += 15
+            # Prefer shallower paths
+            depth = len(p.relative_to(dest_dir).parts)
+            score -= min(depth, 8)
+
+            if score > 0:
+                scored.append((score, p))
+
+        if not scored:
+            # Last resort: any executable script/binary under bin/, excluding utilities.
+            for p in dest_dir.rglob("*"):
+                if not p.is_file():
+                    continue
+                lower = p.name.lower()
+                if lower in self._UTILITY_SCRIPT_NAMES:
+                    continue
+                if any(lower.endswith(suf) for suf in skip_suffixes):
+                    continue
+                try:
+                    if os.access(p, os.X_OK) and (
+                        lower.endswith(".sh") or "." not in p.name
+                    ):
+                        scored.append((1, p))
+                except OSError:
+                    continue
+
+        if not scored:
+            return None
+        scored.sort(key=lambda item: (-item[0], str(item[1])))
+        chosen = scored[0][1]
+        get_logger().info(f"Selected portable launcher: {chosen} (score={scored[0][0]})")
+        return chosen
+
+    def _find_icon(self, dest_dir: Path, exec_path: Optional[Path]) -> Optional[str]:
+        """Prefer a product icon next to the launcher (e.g. studio.svg)."""
+        search_roots = []
+        if exec_path is not None:
+            search_roots.append(exec_path.parent)
+        search_roots.append(dest_dir)
+        names = ("studio.svg", "idea.svg", "icon.svg", "icon.png", "studio.png")
+        for root in search_roots:
+            for name in names:
+                candidate = root / name
+                if candidate.is_file():
+                    return str(candidate)
+            # Generic: any svg/png beside the launcher with product-ish name
+            if root.is_dir():
+                for p in root.iterdir():
+                    if p.suffix.lower() in {".svg", ".png"} and p.is_file():
+                        return str(p)
+        return None
+
+    def _create_launcher(
+        self,
+        app_id: str,
+        name: str,
+        exec_path: Path,
+        icon_path: Optional[str] = None,
+    ) -> Optional[Path]:
         launchers_dir = Path.home() / ".local" / "share" / "applications"
         launchers_dir.mkdir(parents=True, exist_ok=True)
         launcher_path = launchers_dir / f"{app_id}.desktop"
+        icon = icon_path or "application-x-executable"
 
+        # No %U/%F field codes: JetBrains helper scripts treat extra args as
+        # CLI modes (e.g. format.sh → "format"), which looks like a crash.
         content = (
             "[Desktop Entry]\n"
             "Type=Application\n"
             f"Name={name}\n"
-            f'Exec="{exec_path}" %U\n'
-            "Icon=application-x-executable\n"
+            f'Exec="{exec_path}"\n'
+            f"Icon={icon}\n"
             "Terminal=false\n"
-            "Categories=Utility;\n"
+            "StartupNotify=true\n"
+            "Categories=Development;IDE;Utility;\n"
             "X-Dropin-Managed=true\n"
         )
         try:

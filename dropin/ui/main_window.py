@@ -72,6 +72,25 @@ class InstallWorker(QObject):
             ))
 
 
+class InspectWorker(QObject):
+    """Inspect a local package off the UI thread (large archives can take seconds)."""
+
+    finished = Signal(object)  # AppPackageInfo
+    error = Signal(str)
+
+    def __init__(self, file_path: str):
+        super().__init__()
+        self.file_path = file_path
+
+    def run(self):
+        try:
+            info = detect_and_inspect(Path(self.file_path))
+            self.finished.emit(info)
+        except Exception as e:
+            get_logger().error(f"Failed to inspect package {self.file_path}: {e}")
+            self.error.emit(str(e))
+
+
 class ResolveWorker(QObject):
     finished = Signal(object)  # ResolvedUrlInfo
     error = Signal(str)
@@ -158,8 +177,11 @@ class MainWindow(QMainWindow):
         self._install_worker: Optional[InstallWorker] = None
         self._resolve_thread: Optional[QThread] = None
         self._resolve_worker: Optional[ResolveWorker] = None
+        self._inspect_thread: Optional[QThread] = None
+        self._inspect_worker: Optional[InspectWorker] = None
         self._update_thread: Optional[QThread] = None
         self._update_worker: Optional[UpdateCheckWorker] = None
+        self._parked_threads: list = []
 
         self._init_ui()
         self._update_installed_badge()
@@ -333,8 +355,8 @@ class MainWindow(QMainWindow):
 
     def _show_page(self, index: int, animate: bool = True):
         self.stack.setCurrentIndex(index)
+        page = self.stack.widget(index)
         if animate:
-            page = self.stack.widget(index)
             if page is not None:
                 fade_widget(page, 180)
 
@@ -343,10 +365,22 @@ class MainWindow(QMainWindow):
         self.url_input.clear()
         self._update_installed_badge()
 
+    def _park_thread(self, thread: Optional[QThread]) -> None:
+        """Keep a still-running QThread alive so GC does not ABRT Qt."""
+        if thread is None:
+            return
+        try:
+            if thread.isRunning():
+                self._parked_threads.append(thread)
+                get_logger().warning("Parking still-running worker thread until it finishes")
+        except RuntimeError:
+            pass
+
     def closeEvent(self, event):
         for cleaner in (
             self._clean_download_thread,
             self._clean_resolve_thread,
+            self._clean_inspect_thread,
         ):
             try:
                 cleaner()
@@ -354,7 +388,10 @@ class MainWindow(QMainWindow):
                 pass
         if self._install_thread and self._install_thread.isRunning():
             self._install_thread.quit()
-            self._install_thread.wait(3000)
+            if not self._install_thread.wait(3000):
+                self._park_thread(self._install_thread)
+                self._install_thread = None
+                self._install_worker = None
         super().closeEvent(event)
 
     def _open_pick_file_dialog(self):
@@ -479,11 +516,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        if self._inspect_thread and self._inspect_thread.isRunning():
+            return
+
         self._source_url = "local_file"
         self._update_type = "none"
         self._update_id = ""
 
-        # Show progress immediately so the UI never looks frozen while inspecting.
+        # Show progress immediately; inspect large archives off the UI thread.
         self.progress_view.set_package(None)
         self.progress_view.set_operation(
             title="Reading package",
@@ -495,27 +535,49 @@ class MainWindow(QMainWindow):
         self._show_page(2, animate=False)
         QApplication.processEvents()
 
-        try:
-            info = detect_and_inspect(path)
-        except Exception as e:
-            get_logger().error(f"Failed to inspect package {path}: {e}")
-            self._return_to_landing()
-            QMessageBox.warning(
-                self,
-                "Couldn’t read file",
-                f"Dropin couldn’t inspect this file:\n{path.name}\n\n{e}",
-            )
+        self._inspect_thread = QThread()
+        self._inspect_worker = InspectWorker(str(path))
+        self._inspect_worker.moveToThread(self._inspect_thread)
+        self._inspect_worker.finished.connect(self._on_inspect_finished)
+        self._inspect_worker.error.connect(self._on_inspect_error)
+        self._inspect_thread.started.connect(self._inspect_worker.run)
+        self._inspect_thread.start()
+
+    def _clean_inspect_thread(self):
+        if self._inspect_thread is None:
             return
+        if self._inspect_thread.isRunning():
+            self._inspect_thread.quit()
+            if not self._inspect_thread.wait(2000):
+                self._park_thread(self._inspect_thread)
+                self._inspect_thread = None
+                self._inspect_worker = None
+                return
+        self._inspect_thread = None
+        self._inspect_worker = None
+
+    def _on_inspect_finished(self, info: AppPackageInfo):
+        self._clean_inspect_thread()
+        path_name = Path(info.file_path).name if info.file_path else "package"
 
         if info.format == PackageFormat.UNKNOWN:
             self._return_to_landing()
             reason = info.compatibility_reason or (
-                f"“{path.name}” isn’t a supported application package."
+                f"“{path_name}” isn’t a supported application package."
             )
             QMessageBox.warning(self, "Unsupported file", reason)
             return
 
         self._proceed_after_inspect(info)
+
+    def _on_inspect_error(self, message: str):
+        self._clean_inspect_thread()
+        self._return_to_landing()
+        QMessageBox.warning(
+            self,
+            "Couldn’t read file",
+            f"Dropin couldn’t inspect this file.\n\n{message}",
+        )
 
     def _handle_url_input(self):
         url = self.url_input.text().strip()
