@@ -126,6 +126,22 @@ class TestHandlers(unittest.TestCase):
         self.assertFalse(info.compatibility_ok)
         self.assertIn("source code", info.compatibility_reason.lower())
 
+    def test_archive_prefers_studio_sh_over_format_sh(self):
+        handler = ArchiveHandler()
+        tree = self.work_dir / "android-studio"
+        bin_dir = tree / "bin"
+        bin_dir.mkdir(parents=True)
+        format_sh = bin_dir / "format.sh"
+        studio_sh = bin_dir / "studio.sh"
+        format_sh.write_text("#!/bin/sh\n", encoding="utf-8")
+        studio_sh.write_text("#!/bin/sh\n", encoding="utf-8")
+        format_sh.chmod(0o755)
+        studio_sh.chmod(0o755)
+
+        chosen = handler._find_primary_executable(tree, "Android Studio")
+        self.assertIsNotNone(chosen)
+        self.assertEqual(chosen.name, "studio.sh")
+
 
 if __name__ == "__main__":
     unittest.main()

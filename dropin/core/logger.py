@@ -3,17 +3,16 @@ Audit logging for Dropin application events.
 """
 
 import logging
-import os
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 
 
 def get_log_dir() -> Path:
-    xdg_state_home = os.environ.get("XDG_STATE_HOME")
-    if xdg_state_home:
-        path = Path(xdg_state_home) / "dropin"
-    else:
-        path = Path.home() / ".local" / "state" / "dropin"
+    """Log next to the SQLite DB under the XDG data directory."""
+    from dropin.core.registry import get_data_dir
+
+    path = get_data_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -38,7 +37,12 @@ def get_logger() -> logging.Logger:
     )
 
     try:
-        fh = logging.FileHandler(str(log_file), encoding="utf-8")
+        fh = RotatingFileHandler(
+            str(log_file),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=2,
+            encoding="utf-8",
+        )
         fh.setFormatter(formatter)
         logger.addHandler(fh)
     except Exception:

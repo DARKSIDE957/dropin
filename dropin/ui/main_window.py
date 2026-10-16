@@ -385,7 +385,7 @@ class MainWindow(QMainWindow):
             try:
                 cleaner()
             except Exception:
-                pass
+                get_logger().warning("Failed cleaning worker thread on close", exc_info=True)
         if self._install_thread and self._install_thread.isRunning():
             self._install_thread.quit()
             if not self._install_thread.wait(3000):
@@ -912,6 +912,7 @@ class MainWindow(QMainWindow):
                 subprocess.Popen(shlex.split(cmd), start_new_session=True)
                 self._return_to_landing()
             except Exception as e:
+                get_logger().warning("Launch failed for %s", cmd, exc_info=True)
                 QMessageBox.warning(self, "Launch Failed", f"Could not launch application:\n{e}")
         elif self._current_install_result and self._current_install_result.installed_path:
             p = self._current_install_result.installed_path
@@ -919,4 +920,5 @@ class MainWindow(QMainWindow):
                 subprocess.Popen([p], start_new_session=True)
                 self._return_to_landing()
             except Exception as e:
+                get_logger().warning("Launch failed for %s", p, exc_info=True)
                 QMessageBox.warning(self, "Launch Failed", f"Could not launch application:\n{e}")

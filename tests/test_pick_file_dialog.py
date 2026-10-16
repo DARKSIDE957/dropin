@@ -1,8 +1,10 @@
 """Tests for local installable-package scanning."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from dropin.core.models import PackageFormat
 from dropin.ui.pick_file_dialog import (
@@ -45,6 +47,41 @@ class ScanInstallableFilesTests(unittest.TestCase):
             found = scan_installable_files([(root, 0)])
             names = {p.name for p in found}
             self.assertEqual(names, {"top.AppImage"})
+
+
+class DiscoverIconPipelineTests(unittest.TestCase):
+    """Offscreen: refresh clears the stop latch and starts icon workers."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        import sys
+
+        cls._app = QApplication.instance() or QApplication(sys.argv)
+
+    def test_refresh_starts_icon_pipeline(self):
+        from dropin.ui.pick_file_dialog import PickInstallFileDialog
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Sample.AppImage").write_bytes(b"\x7fELF" + b"\x00" * 32)
+
+            dlg = PickInstallFileDialog()
+            with mock.patch(
+                "dropin.ui.pick_file_dialog.scan_installable_files",
+                return_value=[root / "Sample.AppImage"],
+            ):
+                dlg.refresh()
+
+            self.assertFalse(dlg._icons_stopping)
+            self.assertGreater(
+                dlg._icons_inflight + len(dlg._icon_queue),
+                0,
+                "icon pipeline should have work after refresh",
+            )
+            dlg._stop_icon_workers()
+            dlg.close()
 
 
 if __name__ == "__main__":

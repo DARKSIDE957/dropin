@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional, Callable
 
+from dropin.core.logger import get_logger
 from dropin.core.models import AppPackageInfo, InstalledApp, InstallResult, UpdateCheckResult, PackageFormat
 
 
@@ -65,5 +66,8 @@ class BaseHandler(ABC):
                 subprocess.Popen([str(app.file_path)], start_new_session=True)
                 return True
         except Exception:
+            get_logger().warning(
+                "Failed to launch %s", getattr(app, "name", app.id), exc_info=True
+            )
             return False
         return False

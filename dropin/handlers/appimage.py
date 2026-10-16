@@ -222,7 +222,9 @@ class AppImageHandler(BaseHandler):
             try:
                 Path(app.icon_path).unlink()
             except Exception:
-                pass
+                get_logger().warning(
+                    "Failed to remove AppImage icon %s", app.icon_path, exc_info=True
+                )
 
         self._update_desktop_db()
 
@@ -407,7 +409,7 @@ class AppImageHandler(BaseHandler):
             f"Name={name}\n"
             f"GenericName={name}\n"
             f"Comment={comment}\n"
-            f'Exec="{exec_path}" %U\n'
+            f'Exec="{exec_path}"\n'
             f"{icon_line}"
             "Terminal=false\n"
             f"Categories={categories}\n"

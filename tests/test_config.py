@@ -40,6 +40,18 @@ class TestConfig(unittest.TestCase):
         cfg.reset_defaults()
         self.assertEqual(cfg.get("max_download_size_mb"), DEFAULT_CONFIG["max_download_size_mb"])
 
+    def test_migrates_legacy_max_download_4096(self):
+        settings = self.config_dir / "settings.json"
+        settings.write_text(
+            '{"max_download_size_mb": 4096, "require_https": true}',
+            encoding="utf-8",
+        )
+        cfg = ConfigManager(self.config_dir)
+        self.assertEqual(cfg.get("max_download_size_mb"), 32768)
+        # Reloaded file should persist the migrated value.
+        cfg2 = ConfigManager(self.config_dir)
+        self.assertEqual(cfg2.get("max_download_size_mb"), 32768)
+
 
 if __name__ == "__main__":
     unittest.main()

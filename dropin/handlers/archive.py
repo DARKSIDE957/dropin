@@ -30,6 +30,21 @@ class ArchiveHandler(BaseHandler):
 
     format = PackageFormat.ARCHIVE
     ARCHIVE_EXTENSIONS = (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".zip")
+    # Cap inspect member walks so multi-GB tars do not materialize every TarInfo.
+    _INSPECT_MEMBER_CAP = 20_000
+    _SAMPLE_BINARIES = 32
+    _SAMPLE_DESKTOPS = 16
+    _EXTRACT_PROGRESS_EVERY = 50
+    _SOURCE_INDICATORS = (
+        "cmakelists.txt",
+        "cmake_lists.txt",
+        "cargo.toml",
+        "configure.ac",
+        "makefile",
+        "setup.py",
+        "pyproject.toml",
+        "pom.xml",
+    )
 
     def can_handle(self, file_path: Path) -> bool:
         if not file_path.is_file():
@@ -37,22 +52,129 @@ class ArchiveHandler(BaseHandler):
         name = file_path.name.lower()
         return any(name.endswith(ext) for ext in self.ARCHIVE_EXTENSIONS)
 
+    @staticmethod
+    def _member_looks_binary(name: str, is_zip: bool) -> bool:
+        clean = name.strip("/")
+        parts = clean.split("/")
+        base = parts[-1]
+        if not is_zip and "/" not in clean and "." not in base and len(base) > 2:
+            return True
+        return "bin/" in clean and "." not in base
+
+    def _scan_archive_for_inspect(self, file_path: Path, is_zip: bool) -> Dict[str, Any]:
+        """
+        Stream member names once (capped). Validate paths incrementally and keep
+        only small samples — never retain a full getmembers() list.
+        """
+        binaries: List[str] = []
+        desktop_files: List[str] = []
+        matched_source: List[str] = []
+        scanned = 0
+        capped = False
+        probe_dest = Path("/tmp")
+
+        def _consume(name: str) -> Optional[str]:
+            nonlocal scanned, capped
+            scanned += 1
+            safe, safe_msg = validate_archive_members([name], probe_dest)
+            if not safe:
+                return safe_msg
+            lower = name.lower()
+            base = name.strip("/").split("/")[-1]
+            if base.endswith(".desktop") and len(desktop_files) < self._SAMPLE_DESKTOPS:
+                desktop_files.append(name)
+            if (
+                self._member_looks_binary(name, is_zip)
+                and len(binaries) < self._SAMPLE_BINARIES
+            ):
+                binaries.append(name)
+            for ind in self._SOURCE_INDICATORS:
+                if ind in lower and ind not in matched_source:
+                    matched_source.append(ind)
+            if scanned >= self._INSPECT_MEMBER_CAP:
+                capped = True
+            return None
+
+        if is_zip:
+            with zipfile.ZipFile(file_path, "r") as zf:
+                # namelist() is string-only (cheap vs TarInfo). Still cap work.
+                for name in zf.namelist():
+                    err = _consume(name)
+                    if err:
+                        return {"error": err, "unsafe": True}
+                    if capped:
+                        break
+        else:
+            with tarfile.open(file_path, "r:*") as tf:
+                for member in tf:
+                    err = _consume(member.name)
+                    if err:
+                        return {"error": err, "unsafe": True}
+                    # Enough signal for confirm UI — stop early to spare RAM/CPU.
+                    if binaries and desktop_files and scanned >= 256:
+                        break
+                    if capped:
+                        break
+
+        return {
+            "binaries": binaries,
+            "desktop_files": desktop_files,
+            "matched_source": matched_source,
+            "scanned": scanned,
+            "capped": capped,
+        }
+
+    def _extract_archive(
+        self,
+        src_path: Path,
+        dest_dir: Path,
+        is_zip: bool,
+        progress_callback: Optional[Callable[[int, str], None]] = None,
+    ) -> tuple[bool, str]:
+        """Validate + extract in one streaming pass (no double getmembers() lists)."""
+        extracted = 0
+
+        def _tick() -> None:
+            nonlocal extracted
+            extracted += 1
+            if progress_callback and extracted % self._EXTRACT_PROGRESS_EVERY == 0:
+                # Keep progress in the extract band (20–55%).
+                pct = min(55, 20 + (extracted // self._EXTRACT_PROGRESS_EVERY))
+                progress_callback(pct, f"Extracting… ({extracted} files)")
+
+        if is_zip:
+            with zipfile.ZipFile(src_path, "r") as zf:
+                names = zf.namelist()
+                for name in names:
+                    safe, msg = validate_archive_members([name], dest_dir)
+                    if not safe:
+                        return False, msg
+                for name in names:
+                    zf.extract(name, dest_dir)
+                    _tick()
+            return True, ""
+
+        with tarfile.open(src_path, "r:*") as tf:
+            use_filter = hasattr(tarfile, "data_filter")
+            for member in tf:
+                safe, msg = validate_archive_members([member.name], dest_dir)
+                if not safe:
+                    return False, msg
+                if use_filter:
+                    tf.extract(member, dest_dir, filter="data")
+                else:
+                    tf.extract(member, dest_dir)
+                _tick()
+        return True, ""
+
     def inspect(self, file_path: Path) -> AppPackageInfo:
         file_path = file_path.resolve()
         size = file_path.stat().st_size
         distro = get_current_distribution()
-
-        # Safely examine archive member names
-        member_names: List[str] = []
         is_zip = file_path.name.lower().endswith(".zip")
 
         try:
-            if is_zip:
-                with zipfile.ZipFile(file_path, "r") as zf:
-                    member_names = zf.namelist()
-            else:
-                with tarfile.open(file_path, "r:*") as tf:
-                    member_names = [m.name for m in tf.getmembers()]
+            scan = self._scan_archive_for_inspect(file_path, is_zip)
         except Exception as e:
             return AppPackageInfo(
                 name=file_path.stem,
@@ -65,9 +187,7 @@ class ArchiveHandler(BaseHandler):
                 compatibility_reason=f"Archive cannot be read: {e}"
             )
 
-        # Check for path traversal attacks
-        safe, safe_msg = validate_archive_members(member_names, Path("/tmp"))
-        if not safe:
+        if scan.get("unsafe"):
             return AppPackageInfo(
                 name=file_path.stem,
                 version="1.0.0",
@@ -76,34 +196,13 @@ class ArchiveHandler(BaseHandler):
                 file_path=str(file_path),
                 description="Unsafe archive structure.",
                 compatibility_ok=False,
-                compatibility_reason=safe_msg
+                compatibility_reason=scan.get("error") or "Unsafe archive structure.",
             )
 
-        # Look for executable binary and .desktop file
-        binaries = []
-        desktop_files = []
-        is_source_tree = False
-
-        source_indicators = ["cmakelists.txt", "cmake_lists.txt", "cargo.toml", "configure.ac", "makefile", "setup.py", "pyproject.toml", "pom.xml"]
-        lower_names = [m.lower() for m in member_names]
-
-        # Check if archive looks purely like uncompiled source code
-        matched_source = [ind for ind in source_indicators if any(ind in n for n in lower_names)]
-
-        for name in member_names:
-            clean = name.strip("/")
-            parts = clean.split("/")
-            base = parts[-1]
-            if base.endswith(".desktop"):
-                desktop_files.append(name)
-            # Binary check: no file extension or .bin or .sh or in bin/
-            if not is_zip and "/" not in clean and "." not in base and len(base) > 2:
-                binaries.append(name)
-            elif "bin/" in clean and "." not in base:
-                binaries.append(name)
-
-        if matched_source and not desktop_files and not binaries:
-            is_source_tree = True
+        binaries = scan["binaries"]
+        desktop_files = scan["desktop_files"]
+        matched_source = scan["matched_source"]
+        is_source_tree = bool(matched_source and not desktop_files and not binaries)
 
         compat_ok = True
         compat_reason = ""
@@ -137,7 +236,9 @@ class ArchiveHandler(BaseHandler):
             extra_metadata={
                 "binaries": binaries,
                 "desktop_files": desktop_files,
-                "is_zip": is_zip
+                "is_zip": is_zip,
+                "members_scanned": scan["scanned"],
+                "members_capped": scan["capped"],
             }
         )
 
@@ -170,25 +271,11 @@ class ArchiveHandler(BaseHandler):
         if progress_callback:
             progress_callback(20, "Extracting portable application files safely...")
 
-        is_zip = info.extra_metadata.get("is_zip", False)
+        is_zip = info.extra_metadata.get("is_zip", src_path.name.lower().endswith(".zip"))
         try:
-            if is_zip:
-                with zipfile.ZipFile(src_path, "r") as zf:
-                    # Validate paths again before extracting
-                    safe, msg = validate_archive_members(zf.namelist(), dest_dir)
-                    if not safe:
-                        return InstallResult(success=False, message=msg, error_details=msg)
-                    zf.extractall(dest_dir)
-            else:
-                with tarfile.open(src_path, "r:*") as tf:
-                    safe, msg = validate_archive_members([m.name for m in tf.getmembers()], dest_dir)
-                    if not safe:
-                        return InstallResult(success=False, message=msg, error_details=msg)
-                    # Use filter='data' if available (Python 3.12+)
-                    if hasattr(tarfile, "data_filter"):
-                        tf.extractall(dest_dir, filter="data")
-                    else:
-                        tf.extractall(dest_dir)
+            ok, msg = self._extract_archive(src_path, dest_dir, is_zip, progress_callback)
+            if not ok:
+                return InstallResult(success=False, message=msg, error_details=msg)
         except Exception as e:
             return InstallResult(
                 success=False,
@@ -268,7 +355,9 @@ class ArchiveHandler(BaseHandler):
                     launcher.unlink()
                     removed_any = True
                 except Exception:
-                    pass
+                    get_logger().warning(
+                        "Failed to remove archive launcher %s", launcher, exc_info=True
+                    )
 
         still_there = [str(t) for t in targets if t.exists()]
         if still_there:
@@ -453,4 +542,7 @@ class ArchiveHandler(BaseHandler):
             secure_file_permissions(str(launcher_path), is_executable=True)
             return launcher_path
         except Exception:
+            get_logger().warning(
+                "Failed to write archive desktop launcher for %s", name, exc_info=True
+            )
             return None

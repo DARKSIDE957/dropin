@@ -57,6 +57,10 @@ class ConfigManager:
                     merged = dict(DEFAULT_CONFIG)
                     merged.update(saved)
                     self._data = merged
+                    # Early installs saved 4096; migrate once to the current default.
+                    if saved.get("max_download_size_mb") == 4096:
+                        self._data["max_download_size_mb"] = 32768
+                        self.save()
                 else:
                     self._data = dict(DEFAULT_CONFIG)
         except Exception:

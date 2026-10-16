@@ -9,10 +9,11 @@ No drag-and-drop and no folder picker.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple
 
-from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize
+from PySide6.QtCore import Qt, Signal, QObject, QSize
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
@@ -32,25 +33,9 @@ from dropin.core.models import PackageFormat
 from dropin.handlers import detect_and_inspect
 from dropin.ui.icons import icon_for
 
-# QThreads that outlived Discover close. Keeping a strong ref prevents Qt's
-# fatal "QThread: Destroyed while thread is still running" abort when a worker
-# is blocked in slow I/O (e.g. inspecting a multi-GB .tar.gz).
-_LINGERING_ICON_THREADS: List[QThread] = []
-
-# Skip full inspect for archives / huge files in icon workers — tar getmembers()
-# on Android Studio (~1.5GB) blocks for seconds and cannot be interrupted by quit().
+# Skip full inspect for archives / huge files in icon workers — tar member walks
+# on multi-GB bundles block for seconds; Discover only needs a filename label.
 _ICON_INSPECT_MAX_BYTES = 80 * 1024 * 1024
-
-
-def _reap_lingering_icon_threads() -> None:
-    alive: List[QThread] = []
-    for thread in _LINGERING_ICON_THREADS:
-        try:
-            if thread.isRunning():
-                alive.append(thread)
-        except RuntimeError:
-            pass
-    _LINGERING_ICON_THREADS[:] = alive
 
 
 def _format_compatible_here(fmt: PackageFormat) -> bool:
@@ -210,55 +195,53 @@ def scan_installable_files(
     return [p for _, p in ordered[:max_files]]
 
 
-class _IconWorker(QObject):
-    """Load package display name + logo for one path (background)."""
+class _IconResultBridge(QObject):
+    """Main-thread receiver for icon loads finished on Python daemon threads."""
 
     ready = Signal(str, str, object)  # path, display_name, QPixmap|None
+    finished = Signal(int)  # icon generation token when worker completes
 
-    def __init__(self, path: str):
-        super().__init__()
-        self.path = path
 
-    def run(self):
-        path = Path(self.path)
-        raw_name = path.name
-        for ext in (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".zip"):
-            if raw_name.lower().endswith(ext):
-                raw_name = raw_name[: -len(ext)]
-                break
-        else:
-            raw_name = path.stem
-        display = raw_name.replace("-", " ").replace("_", " ").strip() or path.name
-        pixmap = None
-        try:
-            fmt = PackageFormat.from_extension(path.name)
-            size = path.stat().st_size if path.is_file() else 0
-            # Full inspect of portable archives walks every tar member. On a
-            # 1.5GB Android Studio bundle that blocks this QThread for many
-            # seconds; Discover close then ABRTs Dropin. Use the filename only.
-            if fmt == PackageFormat.ARCHIVE or size > _ICON_INSPECT_MAX_BYTES:
-                label = display.title() if display.islower() else display
-                self.ready.emit(self.path, label, None)
-                return
+def _load_icon_payload(path_str: str) -> Tuple[str, str, Optional[QPixmap]]:
+    """Resolve display name + logo off the GUI thread (no Qt widgets)."""
+    path = Path(path_str)
+    raw_name = path.name
+    for ext in (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".zip"):
+        if raw_name.lower().endswith(ext):
+            raw_name = raw_name[: -len(ext)]
+            break
+    else:
+        raw_name = path.stem
+    display = raw_name.replace("-", " ").replace("_", " ").strip() or path.name
+    pixmap = None
+    try:
+        fmt = PackageFormat.from_extension(path.name)
+        size = path.stat().st_size if path.is_file() else 0
+        # Full inspect of portable archives walks every tar member. On a
+        # 1.5GB Android Studio bundle that blocks for many seconds — use the
+        # filename only for Discover list rows.
+        if fmt == PackageFormat.ARCHIVE or size > _ICON_INSPECT_MAX_BYTES:
+            label = display.title() if display.islower() else display
+            return path_str, label, None
 
-            info = detect_and_inspect(path)
-            if info.name:
-                display = info.name
-            pix = QPixmap()
-            if info.icon_bytes:
-                pix.loadFromData(info.icon_bytes)
-            elif info.icon_path and Path(info.icon_path).is_file():
-                pix = QPixmap(info.icon_path)
-            if not pix.isNull():
-                pixmap = pix.scaled(
-                    40,
-                    40,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-        except Exception:
-            pass
-        self.ready.emit(self.path, display, pixmap)
+        info = detect_and_inspect(path)
+        if info.name:
+            display = info.name
+        pix = QPixmap()
+        if info.icon_bytes:
+            pix.loadFromData(info.icon_bytes)
+        elif info.icon_path and Path(info.icon_path).is_file():
+            pix = QPixmap(info.icon_path)
+        if not pix.isNull():
+            pixmap = pix.scaled(
+                40,
+                40,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+    except Exception:
+        get_logger().debug("Discover icon probe failed for %s", path_str, exc_info=True)
+    return path_str, display, pixmap
 
 
 class PackageRow(QWidget):
@@ -311,12 +294,14 @@ class PickInstallFileDialog(QDialog):
         self.setWindowTitle("Discover packages")
         self.setMinimumSize(520, 460)
         self.resize(560, 520)
-        self._icon_threads: List[QThread] = []
         self._icon_queue: List[str] = []
         self._icons_inflight = 0
+        self._icon_generation = 0
         self._max_icon_workers = 2
         self._icons_stopping = False
-        _reap_lingering_icon_threads()
+        self._icon_bridge = _IconResultBridge(self)
+        self._icon_bridge.ready.connect(self._on_icon_ready)
+        self._icon_bridge.finished.connect(self._on_icon_worker_finished)
         self._rows: dict[str, PackageRow] = {}
         self._init_ui()
         self.refresh()
@@ -420,36 +405,52 @@ class PickInstallFileDialog(QDialog):
             self._icon_queue.append(path_str)
 
         self._sync_install_enabled()
-        # Skip background icon QThreads under E2E — they SEGV'd during long pauses.
+        # Skip background icon workers under E2E — they SEGV'd during long pauses.
         if os.environ.get("DROPIN_E2E") != "1":
             self._pump_icon_queue()
 
     def _pump_icon_queue(self):
         if self._icons_stopping:
             return
+        generation = self._icon_generation
         while self._icons_inflight < self._max_icon_workers and self._icon_queue:
             path_str = self._icon_queue.pop(0)
             self._icons_inflight += 1
-            # Do NOT parent QThread to this dialog — accepting/closing while a
-            # child thread is still running aborts Qt ("QThread: Destroyed
-            # while thread is still running").
-            thread = QThread()
-            worker = _IconWorker(path_str)
-            worker.moveToThread(thread)
-            thread.started.connect(worker.run)
-            worker.ready.connect(self._on_icon_ready)
-            worker.ready.connect(thread.quit)
-            thread.finished.connect(self._on_icon_thread_finished)
-            # Keep worker alive for the thread lifetime
-            thread._worker = worker  # type: ignore[attr-defined]
-            self._icon_threads.append(thread)
-            thread.start()
+            bridge = self._icon_bridge
 
-    def _on_icon_thread_finished(self):
+            def _run(
+                target: str = path_str,
+                sink: _IconResultBridge = bridge,
+                gen: int = generation,
+            ) -> None:
+                try:
+                    ready_path, name, pixmap = _load_icon_payload(target)
+                    if gen == self._icon_generation and not self._icons_stopping:
+                        try:
+                            sink.ready.emit(ready_path, name, pixmap)
+                        except RuntimeError:
+                            # Dialog already destroyed — drop the late result.
+                            return
+                except Exception:
+                    get_logger().debug(
+                        "Discover icon worker crashed for %s", target, exc_info=True
+                    )
+                finally:
+                    try:
+                        sink.finished.emit(gen)
+                    except RuntimeError:
+                        pass
+
+            threading.Thread(
+                target=_run,
+                name=f"dropin-icon:{Path(path_str).name[:40]}",
+                daemon=True,
+            ).start()
+
+    def _on_icon_worker_finished(self, generation: int = -1):
+        if generation != self._icon_generation:
+            return
         self._icons_inflight = max(0, self._icons_inflight - 1)
-        # Leave finished threads in _icon_threads until _stop_icon_workers
-        # quits/waits them. Filtering here dropped the last Python ref and
-        # destroyed QThreads during Discover idle pauses.
         if not self._icons_stopping:
             self._pump_icon_queue()
 
@@ -461,40 +462,12 @@ class PickInstallFileDialog(QDialog):
             row.set_logo(name, pixmap)
 
     def _stop_icon_workers(self):
+        # Daemon threads finish on their own; bump generation so late results
+        # cannot touch the next Discover refresh wave.
         self._icons_stopping = True
+        self._icon_generation += 1
         self._icon_queue.clear()
-        threads = list(self._icon_threads)
-        self._icon_threads.clear()
         self._icons_inflight = 0
-        parked = 0
-        for thread in threads:
-            try:
-                thread.finished.disconnect(self._on_icon_thread_finished)
-            except (RuntimeError, TypeError):
-                pass
-            try:
-                worker = getattr(thread, "_worker", None)
-                if worker is not None:
-                    try:
-                        worker.ready.disconnect(self._on_icon_ready)
-                    except (RuntimeError, TypeError):
-                        pass
-            except RuntimeError:
-                pass
-            if thread.isRunning():
-                thread.quit()
-                if not thread.wait(1500):
-                    # Worker blocked in non-interruptible I/O. Park the thread
-                    # so Python GC cannot destroy it while it is still running
-                    # (that fatal Qt abort was crashing Dropin on Install/close).
-                    get_logger().warning(
-                        "Discover icon thread still running; parking until it finishes"
-                    )
-                    _LINGERING_ICON_THREADS.append(thread)
-                    thread.finished.connect(_reap_lingering_icon_threads)
-                    parked += 1
-                    continue
-        _reap_lingering_icon_threads()
 
     def done(self, result: int):
         self._stop_icon_workers()
