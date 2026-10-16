@@ -4,7 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from dropin.ui.pick_file_dialog import scan_installable_files
+from dropin.core.models import PackageFormat
+from dropin.ui.pick_file_dialog import (
+    _format_compatible_here,
+    scan_installable_files,
+)
 
 
 class ScanInstallableFilesTests(unittest.TestCase):
@@ -16,14 +20,20 @@ class ScanInstallableFilesTests(unittest.TestCase):
             (root / "notes.txt").write_bytes(b"x")
             nested = root / "inbox"
             nested.mkdir()
-            (nested / "tool.rpm").write_bytes(b"x")
+            (root / "inbox" / "tool.rpm").write_bytes(b"x")
 
             found = scan_installable_files([(root, 1)])
             names = {p.name for p in found}
             self.assertIn("app.AppImage", names)
-            self.assertIn("pkg.deb", names)
-            self.assertIn("tool.rpm", names)
             self.assertNotIn("notes.txt", names)
+            if _format_compatible_here(PackageFormat.DEB):
+                self.assertIn("pkg.deb", names)
+            else:
+                self.assertNotIn("pkg.deb", names)
+            if _format_compatible_here(PackageFormat.RPM):
+                self.assertIn("tool.rpm", names)
+            else:
+                self.assertNotIn("tool.rpm", names)
 
     def test_depth_zero_skips_subfolders(self):
         with tempfile.TemporaryDirectory() as tmp:

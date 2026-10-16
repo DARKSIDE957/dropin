@@ -3,13 +3,14 @@ Main Window for Dropin — Universal Linux Application Installer & Update Manage
 """
 
 import os
-import shutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote, urlparse
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QTimer, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -25,12 +26,12 @@ from PySide6.QtWidgets import (
 
 from dropin.core.config import get_config
 from dropin.core.logger import get_logger
-from dropin.core.models import AppPackageInfo, InstalledApp, InstallResult, PackageFormat
+from dropin.core.models import AppPackageInfo, InstalledApp, InstallResult, PackageFormat, UpdateCheckResult
 from dropin.core.registry import get_registry
 from dropin.handlers import detect_and_inspect, get_handler_for_file
 from dropin.network.downloader import DownloadWorker
 from dropin.network.url_resolver import UrlResolver, UrlTargetType, ResolvedUrlInfo
-from dropin.ui.drop_zone import DropZone
+from dropin.ui.drop_zone import DropZone, classify_drop_mime
 from dropin.ui.confirmation_view import ConfirmationView
 from dropin.ui.progress_view import ProgressView
 from dropin.ui.result_view import ResultView
@@ -41,6 +42,7 @@ from dropin.ui.asset_dialog import AssetSelectionDialog
 from dropin.ui.theme import apply_system_theme
 from dropin.ui.animations import fade_widget
 from dropin.ui.icons import apply_icon
+from dropin.updater.manager import UpdateManager
 
 
 class InstallWorker(QObject):
@@ -70,6 +72,64 @@ class InstallWorker(QObject):
             ))
 
 
+class ResolveWorker(QObject):
+    finished = Signal(object)  # ResolvedUrlInfo
+    error = Signal(str)
+
+    def __init__(self, url: str, resolver: UrlResolver):
+        super().__init__()
+        self.url = url
+        self.resolver = resolver
+
+    def run(self):
+        try:
+            resolved = self.resolver.resolve(self.url)
+            self.finished.emit(resolved)
+        except Exception as e:
+            get_logger().error(f"URL resolve failed: {e}")
+            self.error.emit(str(e))
+
+
+class UpdateCheckWorker(QObject):
+    finished = Signal(object)  # List[UpdateCheckResult]
+
+    def run(self):
+        try:
+            results = UpdateManager().check_all_updates()
+            self.finished.emit(results)
+        except Exception as e:
+            get_logger().error(f"Startup update check failed: {e}")
+            self.finished.emit([])
+
+
+def local_path_from_input(text: str) -> Optional[str]:
+    """
+    If text is a local filesystem path or file:// URL, return the path.
+    Otherwise return None.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+
+    if text.startswith("file:"):
+        qurl = QUrl(text)
+        if qurl.isLocalFile():
+            path = qurl.toLocalFile()
+            return path or None
+        parsed = urlparse(text)
+        path = unquote(parsed.path or "")
+        return path or None
+
+    # Absolute or home-relative path that exists as a file
+    expanded = os.path.expanduser(text)
+    if expanded.startswith("/") or (len(expanded) > 1 and expanded[1] == ":"):
+        p = Path(expanded)
+        if p.is_file():
+            return str(p)
+
+    return None
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -93,9 +153,14 @@ class MainWindow(QMainWindow):
         self._download_worker: Optional[DownloadWorker] = None
         self._install_thread: Optional[QThread] = None
         self._install_worker: Optional[InstallWorker] = None
+        self._resolve_thread: Optional[QThread] = None
+        self._resolve_worker: Optional[ResolveWorker] = None
+        self._update_thread: Optional[QThread] = None
+        self._update_worker: Optional[UpdateCheckWorker] = None
 
         self._init_ui()
         self._update_installed_badge()
+        QTimer.singleShot(800, self._maybe_check_updates_on_startup)
 
     def _init_ui(self):
         # Apply system theme automatically
@@ -186,6 +251,12 @@ class MainWindow(QMainWindow):
 
     def _create_landing_page(self) -> QWidget:
         page = QWidget(self)
+        page.setAcceptDrops(True)
+        # Route drop events on the landing page itself (header/url row area).
+        page.dragEnterEvent = self._landing_drag_enter  # type: ignore[method-assign]
+        page.dragLeaveEvent = self._landing_drag_leave  # type: ignore[method-assign]
+        page.dropEvent = self._landing_drop  # type: ignore[method-assign]
+
         layout = QVBoxLayout(page)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
@@ -193,6 +264,8 @@ class MainWindow(QMainWindow):
         # Drag & Drop Zone
         self.drop_zone = DropZone(page)
         self.drop_zone.file_selected.connect(self._handle_file_input)
+        self.drop_zone.url_dropped.connect(self._handle_url_dropped)
+        self.drop_zone.drop_rejected.connect(self._on_drop_rejected)
         layout.addWidget(self.drop_zone, 1)
 
         # URL Input Row
@@ -216,6 +289,36 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(url_frame)
         return page
+
+    def _landing_drag_enter(self, event: QDragEnterEvent):
+        mime = event.mimeData()
+        if mime.hasUrls() or mime.hasText():
+            event.acceptProposedAction()
+            self.drop_zone._set_drag_active(True)
+        else:
+            event.ignore()
+
+    def _landing_drag_leave(self, event: QDragLeaveEvent):
+        self.drop_zone._set_drag_active(False)
+        event.accept()
+
+    def _landing_drop(self, event: QDropEvent):
+        self.drop_zone._set_drag_active(False)
+        kind, value = classify_drop_mime(event.mimeData())
+        event.acceptProposedAction()
+        if kind == "file":
+            self._handle_file_input(value)
+        elif kind == "url":
+            self._handle_url_dropped(value)
+        else:
+            self._on_drop_rejected(value)
+
+    def _handle_url_dropped(self, url: str):
+        self.url_input.setText(url)
+        self._handle_url_input()
+
+    def _on_drop_rejected(self, reason: str):
+        QMessageBox.information(self, "Can’t use that drop", reason)
 
     def _update_installed_badge(self):
         count = len(self.registry.list_apps())
@@ -264,7 +367,72 @@ class MainWindow(QMainWindow):
         apply_system_theme(dlg)
         dlg.exec()
 
+    # --- STARTUP UPDATES ---
+
+    def _maybe_check_updates_on_startup(self):
+        cfg = get_config()
+        if not cfg.get("check_updates_on_startup", True):
+            return
+        if not self.registry.list_apps():
+            return
+        if self._update_thread and self._update_thread.isRunning():
+            return
+
+        self._update_thread = QThread()
+        self._update_worker = UpdateCheckWorker()
+        self._update_worker.moveToThread(self._update_thread)
+        self._update_worker.finished.connect(self._on_startup_updates_finished)
+        self._update_thread.started.connect(self._update_worker.run)
+        self._update_thread.start()
+
+    def _on_startup_updates_finished(self, results: object):
+        if self._update_thread and self._update_thread.isRunning():
+            self._update_thread.quit()
+            self._update_thread.wait()
+        self._update_thread = None
+        self._update_worker = None
+
+        if not isinstance(results, list):
+            return
+        updates = [r for r in results if isinstance(r, UpdateCheckResult) and r.update_available]
+        if not updates:
+            return
+        if not get_config().get("notify_updates", True):
+            return
+
+        names = ", ".join(r.app_id for r in updates[:5])
+        # Prefer display names from registry when available
+        display_names = []
+        for r in updates[:5]:
+            app = self.registry.get_app(r.app_id)
+            display_names.append(app.name if app else r.app_id)
+        names = ", ".join(display_names)
+        extra = f" (+{len(updates) - 5} more)" if len(updates) > 5 else ""
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Updates available")
+        box.setText(
+            f"Dropin found updates for {len(updates)} app"
+            f"{'s' if len(updates) != 1 else ''}:\n{names}{extra}"
+        )
+        box.setInformativeText("Open Installed apps to review and update.")
+        open_btn = box.addButton("Open Apps", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() == open_btn:
+            self._open_installed_dialog()
+
     # --- INPUT HANDLING ---
+
+    def _proceed_after_inspect(self, info: AppPackageInfo):
+        """Show confirmation, or install immediately if confirmation is disabled."""
+        self._current_package_info = info
+        if get_config().get("confirm_installations", True):
+            self.confirmation_view.set_package_info(info)
+            self._show_page(1)
+        else:
+            self._on_install_confirmed(info)
 
     def _handle_file_input(self, file_path_str: str):
         path = Path(file_path_str)
@@ -311,9 +479,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Unsupported file", reason)
             return
 
-        self._current_package_info = info
-        self.confirmation_view.set_package_info(info)
-        self._show_page(1)
+        self._proceed_after_inspect(info)
 
     def _handle_url_input(self):
         url = self.url_input.text().strip()
@@ -326,24 +492,69 @@ class MainWindow(QMainWindow):
             self.url_input.setFocus()
             return
 
+        local = local_path_from_input(url)
+        if local:
+            self._handle_file_input(local)
+            return
+
+        if self._resolve_thread and self._resolve_thread.isRunning():
+            return
+
         self.install_url_btn.setEnabled(False)
         self.install_url_btn.setText("…")
-        try:
-            resolved: ResolvedUrlInfo = self.url_resolver.resolve(url)
-        finally:
-            self.install_url_btn.setEnabled(True)
-            self.install_url_btn.setText("Install")
+        self.progress_view.set_operation(
+            title="Looking up URL",
+            status="Resolving download or GitHub release…",
+            percent=-1,
+            detail=url[:80] + ("…" if len(url) > 80 else ""),
+            can_cancel=False,
+        )
+        self._show_page(2, animate=False)
 
+        self._resolve_thread = QThread()
+        self._resolve_worker = ResolveWorker(url, self.url_resolver)
+        self._resolve_worker.moveToThread(self._resolve_thread)
+        self._resolve_worker.finished.connect(self._on_resolve_finished)
+        self._resolve_worker.error.connect(self._on_resolve_error)
+        self._resolve_thread.started.connect(self._resolve_worker.run)
+        self._resolve_thread.start()
+
+    def _clean_resolve_thread(self):
+        if self._resolve_thread and self._resolve_thread.isRunning():
+            self._resolve_thread.quit()
+            self._resolve_thread.wait()
+        self._resolve_thread = None
+        self._resolve_worker = None
+        self.install_url_btn.setEnabled(True)
+        self.install_url_btn.setText("Install")
+
+    def _on_resolve_finished(self, resolved: object):
+        self._clean_resolve_thread()
+        if not isinstance(resolved, ResolvedUrlInfo):
+            self._return_to_landing()
+            QMessageBox.warning(self, "Invalid URL", "Could not resolve that URL.")
+            return
         self._process_resolved_url(resolved)
+
+    def _on_resolve_error(self, error_message: str):
+        self._clean_resolve_thread()
+        self._return_to_landing()
+        QMessageBox.warning(
+            self,
+            "Couldn’t look up URL",
+            f"Dropin couldn’t resolve that link:\n{error_message}",
+        )
 
     def _process_resolved_url(self, resolved: ResolvedUrlInfo):
         if resolved.target_type == UrlTargetType.UNSUPPORTED:
+            self._return_to_landing()
             QMessageBox.warning(self, "Invalid URL", resolved.error_message)
             return
 
         if resolved.target_type == UrlTargetType.GITHUB_RELEASE:
             release_info = resolved.github_info
             if not release_info.assets:
+                self._return_to_landing()
                 QMessageBox.warning(self, "No Assets", f"No compatible release assets found for {release_info.repo}.")
                 return
 
@@ -353,6 +564,7 @@ class MainWindow(QMainWindow):
                 dlg = AssetSelectionDialog(release_info, self)
                 apply_system_theme(dlg)
                 if dlg.exec() != AssetSelectionDialog.DialogCode.Accepted or not dlg.selected_asset:
+                    self._return_to_landing()
                     return
                 selected_asset = dlg.selected_asset
 
@@ -475,9 +687,7 @@ class MainWindow(QMainWindow):
         if not info.integrity_message:
             info.integrity_message = "Package content signature (magic bytes) verified"
 
-        self._current_package_info = info
-        self.confirmation_view.set_package_info(info)
-        self._show_page(1)
+        self._proceed_after_inspect(info)
 
     def _on_download_error(self, error_message: str):
         self._clean_download_thread()
@@ -499,6 +709,7 @@ class MainWindow(QMainWindow):
         if self._download_worker:
             self._download_worker.cancel()
         self._clean_download_thread()
+        self._clean_resolve_thread()
         self._return_to_landing()
 
     # --- INSTALLATION EXECUTION ---
@@ -549,6 +760,11 @@ class MainWindow(QMainWindow):
         if result.success and self._current_package_info:
             # Register in SQLite database
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            icon = (
+                result.icon_path
+                or self._current_package_info.icon_path
+                or ""
+            )
             app_record = InstalledApp(
                 id=result.app_id or f"dropin-{self._current_package_info.name.lower()}",
                 name=self._current_package_info.name,
@@ -556,7 +772,7 @@ class MainWindow(QMainWindow):
                 format=self._current_package_info.format.value,
                 file_path=result.installed_path or self._current_package_info.file_path,
                 launcher_path=result.launcher_path or "",
-                icon_path="",
+                icon_path=icon,
                 install_date=now_str,
                 source_url=self._source_url,
                 update_type=self._update_type,

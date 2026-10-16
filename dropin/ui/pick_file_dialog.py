@@ -26,13 +26,33 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from dropin.core.distro import get_current_distribution
 from dropin.core.models import PackageFormat
 from dropin.handlers import detect_and_inspect
 from dropin.ui.icons import icon_for
 
 
+def _format_compatible_here(fmt: PackageFormat) -> bool:
+    """Hide formats this distro clearly cannot install (e.g. .deb on Fedora/Bazzite)."""
+    if fmt == PackageFormat.UNKNOWN:
+        return False
+    distro = get_current_distribution()
+    if fmt == PackageFormat.DEB:
+        return bool(distro.is_debian_family or distro.has_apt or distro.has_dpkg)
+    if fmt == PackageFormat.RPM:
+        return bool(
+            distro.is_fedora_family
+            or distro.is_suse_family
+            or distro.has_dnf
+            or distro.has_rpm
+            or distro.has_zypper
+        )
+    return True
+
+
 def _is_installable(path: Path) -> bool:
-    return PackageFormat.from_extension(path.name) != PackageFormat.UNKNOWN
+    fmt = PackageFormat.from_extension(path.name)
+    return _format_compatible_here(fmt)
 
 
 def _format_size(num_bytes: int) -> str:

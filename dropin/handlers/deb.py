@@ -72,10 +72,17 @@ class DebHandler(BaseHandler):
 
         if not distro.is_debian_family and not (distro.has_apt or distro.has_dpkg):
             compat_ok = False
-            compat_reason = (
-                f"Your distribution ({distro.name}) uses {distro.id.upper()} package management. "
-                "DEB packages require a Debian/Ubuntu-compatible system with 'apt' or 'dpkg'."
-            )
+            family = [distro.id.lower()] + [x.lower() for x in distro.id_like]
+            if any(x in family for x in ("fedora", "bazzite", "rhel", "centos", "nobara")):
+                compat_reason = (
+                    f"{distro.name} can’t install .deb packages. "
+                    "Use an AppImage or Flatpak for this app instead."
+                )
+            else:
+                compat_reason = (
+                    f"Your distribution ({distro.name}) doesn’t use Debian packages. "
+                    "DEB files need Ubuntu/Debian (apt/dpkg). Try an AppImage or Flatpak instead."
+                )
         else:
             # Check architecture
             normalized_sys_arch = "amd64" if distro.arch == "x86_64" else ("arm64" if distro.arch == "aarch64" else distro.arch)

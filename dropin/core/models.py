@@ -123,6 +123,7 @@ class InstallResult:
     installed_path: Optional[str] = None
     launcher_path: Optional[str] = None
     launch_command: Optional[str] = None
+    icon_path: Optional[str] = None
     error_details: Optional[str] = None
 
 

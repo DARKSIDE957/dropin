@@ -169,7 +169,8 @@ class AppImageHandler(BaseHandler):
             app_id=app_id,
             installed_path=str(target_path),
             launcher_path=str(launcher_path) if launcher_path else None,
-            launch_command=str(target_path)
+            launch_command=str(target_path),
+            icon_path=icon_path or None,
         )
 
     def uninstall(self, app: InstalledApp) -> bool:

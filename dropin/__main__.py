@@ -85,10 +85,15 @@ def main():
     except Exception:
         pass
 
-    # If target passed via CLI
+    # If target passed via CLI / desktop %U
     if args.target:
+        from dropin.ui.main_window import local_path_from_input
+
         target_str = args.target.strip()
-        if target_str.startswith("http://") or target_str.startswith("https://"):
+        local = local_path_from_input(target_str)
+        if local:
+            window._handle_file_input(local)
+        elif target_str.startswith("http://") or target_str.startswith("https://"):
             window.url_input.setText(target_str)
             window._handle_url_input()
         elif Path(target_str).is_file():

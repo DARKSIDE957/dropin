@@ -67,7 +67,7 @@ class RpmHandler(BaseHandler):
             compat_ok = False
             compat_reason = (
                 f"Your distribution ({distro.name}) does not use RPM package management. "
-                "RPM packages require a Fedora, RHEL, openSUSE, or Bazzite system with 'dnf' or 'rpm'."
+                "Try an AppImage or Flatpak instead."
             )
         else:
             # Check architecture

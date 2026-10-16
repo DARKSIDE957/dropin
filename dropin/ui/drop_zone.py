@@ -4,9 +4,10 @@ Provides clear visual cues, drop handling, and accessible file browsing fallback
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
+from urllib.parse import unquote, urlparse
 
-from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QAbstractAnimation, QSize
+from PySide6.QtCore import Qt, Signal, QPropertyAnimation, QEasingCurve, QAbstractAnimation, QSize, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -21,10 +22,91 @@ from PySide6.QtWidgets import (
 from dropin.ui.icons import icon_for
 
 
+def _http_url_from_qurl(url: QUrl) -> Optional[str]:
+    """Return an http(s) URL string, or None."""
+    if not url.isValid() or url.isEmpty():
+        return None
+    if url.isLocalFile():
+        return None
+    scheme = (url.scheme() or "").lower()
+    if scheme in ("http", "https"):
+        return url.toString()
+    return None
+
+
+def _http_url_from_text(text: str) -> Optional[str]:
+    text = (text or "").strip()
+    if not text:
+        return None
+    # Browsers sometimes drop a bare URL or one wrapped in whitespace/newlines.
+    first = text.split()[0] if text.split() else text
+    parsed = urlparse(first)
+    if parsed.scheme.lower() in ("http", "https") and parsed.netloc:
+        return first
+    return None
+
+
+def classify_drop_mime(mime) -> Tuple[str, str]:
+    """
+    Classify drag/drop mime data.
+
+    Returns (kind, value) where kind is:
+      - "file": local filesystem path
+      - "url": http(s) URL string
+      - "reject": human-readable reason
+    """
+    if mime.hasUrls():
+        urls = mime.urls()
+        if urls:
+            qurl = urls[0]
+            if qurl.isLocalFile():
+                return "file", qurl.toLocalFile()
+            http = _http_url_from_qurl(qurl)
+            if http:
+                return "url", http
+            scheme = (qurl.scheme() or "").lower()
+            if scheme == "file":
+                # Rare non-local file URL — try toLocalFile / path
+                path = qurl.toLocalFile() or unquote(qurl.path())
+                if path:
+                    return "file", path
+            if scheme:
+                return (
+                    "reject",
+                    f"Dropin can’t install from “{scheme}://” links. "
+                    "Drop a package file, or use an https:// download / GitHub URL.",
+                )
+            return (
+                "reject",
+                "That drop isn’t a package file or download link Dropin can use.",
+            )
+
+    if mime.hasText():
+        http = _http_url_from_text(mime.text())
+        if http:
+            return "url", http
+        text = (mime.text() or "").strip()
+        if text.startswith("/") and Path(text.split("\n", 1)[0].strip()).is_file():
+            return "file", text.split("\n", 1)[0].strip()
+        if text:
+            return (
+                "reject",
+                "Drop a package file (.AppImage, .deb, .rpm, Flatpak) "
+                "or an https:// download / GitHub URL.",
+            )
+
+    return (
+        "reject",
+        "Drop a package file or paste an https:// download / GitHub URL.",
+    )
+
+
 class DropZone(QFrame):
     """Interactive drag-and-drop landing area."""
 
     file_selected = Signal(str)
+    url_dropped = Signal(str)
+    drop_rejected = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -54,7 +136,8 @@ class DropZone(QFrame):
         layout.addWidget(self.primary_label)
 
         self.sub_label = QLabel(
-            "AppImage · DEB · RPM · Flatpak · portable archives", self
+            "AppImage · DEB · RPM · Flatpak · portable archives · or a download URL",
+            self,
         )
         self.sub_label.setObjectName("mutedLabel")
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -107,13 +190,20 @@ class DropZone(QFrame):
         if isinstance(effect, QGraphicsOpacityEffect):
             effect.setOpacity(1.0)
 
+    def _drop_is_acceptable(self, mime) -> bool:
+        kind, _ = classify_drop_mime(mime)
+        return kind in ("file", "url")
+
     def dragEnterEvent(self, event: QDragEnterEvent):
-        if event.mimeData().hasUrls():
-            urls = event.mimeData().urls()
-            if urls and urls[0].isLocalFile():
-                event.acceptProposedAction()
-                self._set_drag_active(True)
-                return
+        if self._drop_is_acceptable(event.mimeData()):
+            event.acceptProposedAction()
+            self._set_drag_active(True)
+            return
+        # Accept so dropEvent can show feedback instead of a silent ignore.
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+            self._set_drag_active(True)
+            return
         event.ignore()
 
     def dragLeaveEvent(self, event: QDragLeaveEvent):
@@ -122,13 +212,16 @@ class DropZone(QFrame):
 
     def dropEvent(self, event: QDropEvent):
         self._set_drag_active(False)
-        urls = event.mimeData().urls()
-        if urls and urls[0].isLocalFile():
-            local_path = urls[0].toLocalFile()
+        kind, value = classify_drop_mime(event.mimeData())
+        if kind == "file":
             event.acceptProposedAction()
-            self.file_selected.emit(local_path)
+            self.file_selected.emit(value)
+        elif kind == "url":
+            event.acceptProposedAction()
+            self.url_dropped.emit(value)
         else:
-            event.ignore()
+            event.acceptProposedAction()
+            self.drop_rejected.emit(value)
 
     def _on_browse_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(
