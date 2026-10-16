@@ -49,6 +49,27 @@ def main():
 
     window = MainWindow()
 
+    # Surface unexpected Python errors instead of dying quietly mid-action.
+    def _excepthook(exc_type, exc_value, exc_tb):
+        get_logger().exception(
+            "Unhandled exception",
+            exc_info=(exc_type, exc_value, exc_tb),
+        )
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.critical(
+                window,
+                "Something went wrong",
+                f"{exc_type.__name__}: {exc_value}\n\n"
+                "Dropin hit an unexpected error. The app will stay open — "
+                "try again or restart if things look off.",
+            )
+        except Exception:
+            pass
+
+    sys.excepthook = _excepthook
+
     # Keep Dropin in sync when the desktop theme/palette changes
     def _on_palette_changed(*_args):
         apply_system_theme(app)

@@ -159,6 +159,7 @@ class ConfirmationView(QWidget):
             pixmap = QPixmap(str(info.icon_path))
 
         if pixmap and not pixmap.isNull():
+            self.icon_label.setStyleSheet("")
             self.icon_label.setPixmap(
                 pixmap.scaled(
                     48, 48,
@@ -178,7 +179,7 @@ class ConfirmationView(QWidget):
             }
             self.icon_label.clear()
             self.icon_label.setText(symbols.get(info.format.value, "📦"))
-            self.icon_label.setStyleSheet("font-size: 28px;")
+            self.icon_label.setStyleSheet("font-size: 28px; background: transparent;")
 
         self.publisher_row[2].setText(info.publisher or "Independent publisher")
         self.dest_row[2].setText(info.target_destination or "~/Applications")

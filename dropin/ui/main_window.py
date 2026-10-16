@@ -11,6 +11,7 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -268,18 +269,49 @@ class MainWindow(QMainWindow):
     def _handle_file_input(self, file_path_str: str):
         path = Path(file_path_str)
         if not path.is_file():
-            QMessageBox.warning(self, "Invalid File", f"The selected path is not a valid file:\n{file_path_str}")
+            QMessageBox.warning(
+                self,
+                "Invalid File",
+                f"The selected path is not a valid file:\n{file_path_str}",
+            )
             return
 
         self._source_url = "local_file"
         self._update_type = "none"
         self._update_id = ""
 
-        # Inspect package
-        info = detect_and_inspect(path)
-        self._current_package_info = info
+        # Show progress immediately so the UI never looks frozen while inspecting.
+        self.progress_view.set_operation(
+            title="Reading package",
+            status="Inspecting file…",
+            percent=-1,
+            detail=path.name,
+            can_cancel=False,
+        )
+        self._show_page(2, animate=False)
+        QApplication.processEvents()
 
-        # Show Confirmation
+        try:
+            info = detect_and_inspect(path)
+        except Exception as e:
+            get_logger().error(f"Failed to inspect package {path}: {e}")
+            self._return_to_landing()
+            QMessageBox.warning(
+                self,
+                "Couldn’t read file",
+                f"Dropin couldn’t inspect this file:\n{path.name}\n\n{e}",
+            )
+            return
+
+        if info.format == PackageFormat.UNKNOWN:
+            self._return_to_landing()
+            reason = info.compatibility_reason or (
+                f"“{path.name}” isn’t a supported application package."
+            )
+            QMessageBox.warning(self, "Unsupported file", reason)
+            return
+
+        self._current_package_info = info
         self.confirmation_view.set_package_info(info)
         self._show_page(1)
 
@@ -359,12 +391,12 @@ class MainWindow(QMainWindow):
     ):
         self.progress_view.set_operation(
             title=f"Downloading {filename}",
-            status="Connecting securely...",
-            percent=0,
-            detail="Validating URL, HTTPS, and redirect safety...",
-            can_cancel=True
+            status="Connecting securely…",
+            percent=-1,
+            detail="Validating URL, HTTPS, and redirect safety…",
+            can_cancel=True,
         )
-        self._show_page(2)
+        self._show_page(2, animate=False)
 
         self._download_thread = QThread()
         self._download_worker = DownloadWorker(
@@ -403,8 +435,28 @@ class MainWindow(QMainWindow):
     def _on_download_finished(self, temp_file_path: str, filename: str, sha256: str = ""):
         self._clean_download_thread()
 
+        self.progress_view.set_operation(
+            title="Reading package",
+            status="Inspecting downloaded file…",
+            percent=-1,
+            detail=filename,
+            can_cancel=False,
+        )
+        QApplication.processEvents()
+
         path = Path(temp_file_path)
-        info = detect_and_inspect(path)
+        try:
+            info = detect_and_inspect(path)
+        except Exception as e:
+            get_logger().error(f"Failed to inspect download {filename}: {e}")
+            self.result_view.set_result(InstallResult(
+                success=False,
+                message="Download finished, but the package couldn’t be read.",
+                error_details=str(e),
+            ))
+            self._show_page(3)
+            return
+
         if info.name == path.name:
             info.name = filename.split(".")[0]
 
@@ -459,12 +511,12 @@ class MainWindow(QMainWindow):
 
         self.progress_view.set_operation(
             title=f"Installing {info.name}",
-            status="Starting installation...",
+            status="Starting installation…",
             percent=-1,
-            detail="Setting up permissions and desktop integration...",
-            can_cancel=False
+            detail="Setting up permissions and desktop integration…",
+            can_cancel=False,
         )
-        self._show_page(2)
+        self._show_page(2, animate=False)
 
         self._install_thread = QThread()
         self._install_worker = InstallWorker(handler, info)

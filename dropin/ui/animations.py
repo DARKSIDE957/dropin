@@ -108,6 +108,7 @@ def stop_pulse(anim: Optional[QPropertyAnimation], widget: Optional[QWidget] = N
         anim.stop()
         if anim in _ACTIVE:
             _ACTIVE.remove(anim)
+        anim.deleteLater()
     if widget is not None:
         effect = widget.graphicsEffect()
         if isinstance(effect, QGraphicsOpacityEffect):
