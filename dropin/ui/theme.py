@@ -262,12 +262,17 @@ def get_stylesheet(dark: bool | None = None, palette: QPalette | None = None) ->
         }}
         QLabel#metaKey {{
             color: {c['muted']};
-            font-size: 11px;
+            font-size: 12px;
+            padding: 0 0 2px 0;
+            /* Keep room for descenders (g, y, p) — tight clips make "Package" look like "Packaqe". */
+            min-height: 16px;
         }}
         QLabel#metaValue {{
             color: {c['window_text']};
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 600;
+            padding: 0 0 4px 0;
+            min-height: 18px;
         }}
         QLabel#appTitle {{
             font-size: 16px;

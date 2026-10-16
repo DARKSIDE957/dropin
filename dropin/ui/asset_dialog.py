@@ -37,7 +37,7 @@ class AssetListItemWidget(QWidget):
         col.addWidget(name_lbl)
 
         size_mb = f"{self.asset.size_bytes / (1024*1024):.1f} MB" if self.asset.size_bytes > 0 else "Unknown size"
-        sub_lbl = QLabel(f"Arch: {self.asset.architecture}  ·  Size: {size_mb}", self)
+        sub_lbl = QLabel(f"Arch: {self.asset.architecture},  Size: {size_mb}", self)
         sub_lbl.setObjectName("mutedLabel")
         col.addWidget(sub_lbl)
 
@@ -54,7 +54,7 @@ class AssetSelectionDialog(QDialog):
         super().__init__(parent)
         self.release_info = release_info
         self.selected_asset: GitHubAsset = None
-        self.setWindowTitle(f"Select Package — {release_info.repo} {release_info.tag_name}")
+        self.setWindowTitle(f"Select package: {release_info.repo} {release_info.tag_name}")
         self.setMinimumSize(480, 320)
         self._init_ui()
 

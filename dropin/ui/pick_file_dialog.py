@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from dropin.core.distro import get_current_distribution
+from dropin.core.logger import get_logger
 from dropin.core.models import PackageFormat
 from dropin.handlers import detect_and_inspect
 from dropin.ui.icons import icon_for
@@ -249,7 +250,7 @@ class PackageRow(QWidget):
         except OSError:
             size = "?"
         folder = path.parent.name or str(path.parent)
-        self.sub = QLabel(f"{fmt.value}  ·  {size}  ·  {folder}", self)
+        self.sub = QLabel(f"{fmt.value},  {size},  {folder}", self)
         self.sub.setObjectName("mutedLabel")
         self.sub.setWordWrap(True)
         text_col.addWidget(self.sub)
@@ -269,7 +270,7 @@ class PickInstallFileDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Discover packages — Dropin")
+        self.setWindowTitle("Discover packages")
         self.setMinimumSize(520, 460)
         self.resize(560, 520)
         self._icon_threads: List[QThread] = []
@@ -375,13 +376,21 @@ class PickInstallFileDialog(QDialog):
             self._icon_queue.append(path_str)
 
         self._sync_install_enabled()
-        self._pump_icon_queue()
+        # Skip background icon QThreads under E2E — they SEGV'd during long pauses.
+        if os.environ.get("DROPIN_E2E") != "1":
+            self._pump_icon_queue()
 
     def _pump_icon_queue(self):
         while self._icons_inflight < self._max_icon_workers and self._icon_queue:
             path_str = self._icon_queue.pop(0)
             self._icons_inflight += 1
-            thread = QThread(self)
+            # Do NOT parent QThread to this dialog — accepting/closing while a
+            # child thread is still running aborts Qt ("QThread: Destroyed
+            # while thread is still running").
+            # Also do NOT deleteLater the thread while it still sits in
+            # _icon_threads — dropping the Python ref mid-event-loop SEGV'd
+            # during long Discover pauses.
+            thread = QThread()
             worker = _IconWorker(path_str)
             worker.moveToThread(thread)
             thread.started.connect(worker.run)
@@ -395,8 +404,11 @@ class PickInstallFileDialog(QDialog):
 
     def _on_icon_thread_finished(self):
         self._icons_inflight = max(0, self._icons_inflight - 1)
-        self._icon_threads = [t for t in self._icon_threads if t.isRunning()]
+        # Leave finished threads in _icon_threads until _stop_icon_workers
+        # quits/waits them. Filtering here dropped the last Python ref and
+        # destroyed QThreads during Discover idle pauses.
         self._pump_icon_queue()
+
     def _on_icon_ready(self, path_str: str, name: str, pixmap):
         row = self._rows.get(path_str)
         if row is not None:
@@ -404,11 +416,33 @@ class PickInstallFileDialog(QDialog):
 
     def _stop_icon_workers(self):
         self._icon_queue.clear()
-        for thread in list(self._icon_threads):
-            thread.quit()
-            thread.wait(150)
+        threads = list(self._icon_threads)
         self._icon_threads.clear()
         self._icons_inflight = 0
+        for thread in threads:
+            try:
+                thread.finished.disconnect(self._on_icon_thread_finished)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                worker = getattr(thread, "_worker", None)
+                if worker is not None:
+                    try:
+                        worker.ready.disconnect(self._on_icon_ready)
+                    except (RuntimeError, TypeError):
+                        pass
+            except RuntimeError:
+                pass
+            if thread.isRunning():
+                thread.quit()
+                if not thread.wait(3000):
+                    get_logger().warning("Discover icon thread did not stop in time")
+                    thread.wait(1000)
+        # Threads fully stopped — safe for Python GC now.
+
+    def done(self, result: int):
+        self._stop_icon_workers()
+        super().done(result)
 
     def closeEvent(self, event):
         self._stop_icon_workers()
@@ -424,5 +458,7 @@ class PickInstallFileDialog(QDialog):
         path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
             return
+        # Stop workers before accept() tears the dialog down.
+        self._stop_icon_workers()
         self.file_chosen.emit(str(path))
         self.accept()

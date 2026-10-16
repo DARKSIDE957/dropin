@@ -136,7 +136,7 @@ class DropZone(QFrame):
         layout.addWidget(self.primary_label)
 
         self.sub_label = QLabel(
-            "AppImage · DEB · RPM · Flatpak · portable archives · or a download URL",
+            "AppImage, DEB, RPM, Flatpak, portable archives, or a download URL",
             self,
         )
         self.sub_label.setObjectName("mutedLabel")
@@ -163,24 +163,11 @@ class DropZone(QFrame):
             self.primary_label.setText("Drop an application file here")
 
     def _start_pulse(self):
+        # Opacity pulses via QGraphicsOpacityEffect blank widgets on Wayland.
+        # Visual feedback is the dragActive stylesheet only.
         self._stop_pulse()
-        effect = self.icon_label.graphicsEffect()
-        if not isinstance(effect, QGraphicsOpacityEffect):
-            effect = QGraphicsOpacityEffect(self.icon_label)
-            self.icon_label.setGraphicsEffect(effect)
-        effect.setOpacity(0.5)
-        self._pulse = QPropertyAnimation(effect, b"opacity", self)
-        self._pulse.setDuration(700)
-        self._pulse.setStartValue(0.5)
-        self._pulse.setEndValue(1.0)
-        self._pulse.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self._pulse.setLoopCount(-1)
-        self._pulse.start(QAbstractAnimation.DeletionPolicy.KeepWhenStopped)
 
     def _stop_pulse(self):
-        # Stop the animation before touching the graphics effect. Clearing the
-        # effect while a QPropertyAnimation still owns it can native-crash Qt
-        # (common when the user drops a file right after a drag-enter pulse).
         anim = self._pulse
         self._pulse = None
         if anim is not None:
@@ -189,6 +176,7 @@ class DropZone(QFrame):
         effect = self.icon_label.graphicsEffect()
         if isinstance(effect, QGraphicsOpacityEffect):
             effect.setOpacity(1.0)
+            self.icon_label.setGraphicsEffect(None)
 
     def _drop_is_acceptable(self, mime) -> bool:
         kind, _ = classify_drop_mime(mime)

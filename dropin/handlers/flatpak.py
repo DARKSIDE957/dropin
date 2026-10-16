@@ -77,7 +77,7 @@ class FlatpakHandler(BaseHandler):
             size_bytes=size,
             requires_root=(scope == "system"),
             target_destination=f"Flatpak ({scope.title()} Scope)",
-            can_customize_destination=True,
+            can_customize_destination=False,
             compatibility_ok=compat_ok,
             compatibility_reason=compat_reason,
             extra_metadata=meta

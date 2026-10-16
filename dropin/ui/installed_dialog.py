@@ -4,8 +4,9 @@ Allows searching, launching, checking updates, and safe uninstallation of tracke
 """
 
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QThread, QObject
-from PySide6.QtGui import QPixmap
+
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QSize
+from PySide6.QtGui import QPixmap, QFontMetrics
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -17,6 +18,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QMessageBox,
+    QSizePolicy,
+    QAbstractItemView,
 )
 
 from dropin.core.models import InstalledApp
@@ -43,6 +46,8 @@ class UpdateCheckWorker(QObject):
 
 
 class AppItemWidget(QWidget):
+    """Installed app row: icon, name/meta, and actions sized to fit without clipping."""
+
     launch_clicked = Signal(InstalledApp)
     uninstall_clicked = Signal(InstalledApp)
     update_clicked = Signal(InstalledApp)
@@ -50,12 +55,14 @@ class AppItemWidget(QWidget):
     def __init__(self, app: InstalledApp, parent=None):
         super().__init__(parent)
         self.app = app
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._full_sub = ""
         self._init_ui()
 
     def _init_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
 
         self.icon_label = QLabel(self)
         self.icon_label.setObjectName("iconSlot")
@@ -64,64 +71,105 @@ class AppItemWidget(QWidget):
         if self.app.icon_path and Path(self.app.icon_path).is_file():
             pix = QPixmap(self.app.icon_path)
             self.icon_label.setPixmap(
-                pix.scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                pix.scaled(
+                    32,
+                    32,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
             )
         else:
             self.icon_label.setText("📦")
-            self.icon_label.setStyleSheet("font-size: 18px; background: transparent;")
-        layout.addWidget(self.icon_label)
+            self.icon_label.setStyleSheet("font-size: 16px; background: transparent;")
+        layout.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
 
         info_col = QVBoxLayout()
+        info_col.setContentsMargins(0, 0, 0, 0)
         info_col.setSpacing(3)
 
-        name_row = QHBoxLayout()
-        name_row.setSpacing(6)
-
         self.name_label = QLabel(self.app.name, self)
-        self.name_label.setStyleSheet("font-weight: 700; font-size: 13px; background: transparent;")
+        self.name_label.setStyleSheet(
+            "font-weight: 700; font-size: 13px; background: transparent; padding-bottom: 1px;"
+        )
         self.name_label.setWordWrap(False)
-        name_row.addWidget(self.name_label)
+        self.name_label.setMinimumHeight(18)
+        self.name_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self.name_label.setToolTip(self.app.name)
+        info_col.addWidget(self.name_label)
 
-        self.format_badge = QLabel(self.app.format, self)
-        self.format_badge.setObjectName("formatBadge")
-        name_row.addWidget(self.format_badge)
-
-        if self.app.update_available:
-            self.upd_badge = QLabel(f"→ {self.app.latest_version}", self)
-            self.upd_badge.setObjectName("updateBadge")
-            name_row.addWidget(self.upd_badge)
-
-        name_row.addStretch()
-        info_col.addLayout(name_row)
-
-        checked = f"  ·  Checked {self.app.last_update_check}" if self.app.last_update_check else ""
-        sub_text = f"v{self.app.version}  ·  Installed {self.app.install_date or 'recently'}{checked}"
-        self.sub_label = QLabel(sub_text, self)
+        bits = [self.app.format, f"v{self.app.version}"]
+        if self.app.update_available and self.app.latest_version:
+            bits.append(f"update {self.app.latest_version}")
+        self._full_sub = ", ".join(bits)
+        self.sub_label = QLabel(self._full_sub, self)
         self.sub_label.setObjectName("mutedLabel")
+        self.sub_label.setStyleSheet(
+            "font-size: 11px; background: transparent; padding-bottom: 1px;"
+        )
+        self.sub_label.setWordWrap(False)
+        self.sub_label.setMinimumHeight(16)
+        self.sub_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
         info_col.addWidget(self.sub_label)
 
         layout.addLayout(info_col, 1)
 
+        btn_style = "padding: 4px 12px; font-size: 11px; min-width: 0;"
+
         if self.app.update_available:
             self.update_btn = QPushButton("Update", self)
             self.update_btn.setObjectName("primaryBtn")
-            self.update_btn.setStyleSheet("padding: 4px 10px; font-size: 11px;")
+            self.update_btn.setStyleSheet(btn_style)
             self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.update_btn.setMinimumHeight(30)
             self.update_btn.clicked.connect(lambda: self.update_clicked.emit(self.app))
-            layout.addWidget(self.update_btn)
+            layout.addWidget(self.update_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.launch_btn = QPushButton("Launch", self)
         self.launch_btn.setObjectName("compactBtn")
+        self.launch_btn.setStyleSheet(btn_style)
         self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.launch_btn.setMinimumHeight(30)
         self.launch_btn.clicked.connect(lambda: self.launch_clicked.emit(self.app))
-        layout.addWidget(self.launch_btn)
+        layout.addWidget(self.launch_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
         self.uninstall_btn = QPushButton("Uninstall", self)
         self.uninstall_btn.setObjectName("dangerBtn")
-        self.uninstall_btn.setStyleSheet("padding: 4px 10px; font-size: 11px;")
+        self.uninstall_btn.setStyleSheet(btn_style)
         self.uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.uninstall_btn.setMinimumHeight(30)
         self.uninstall_btn.clicked.connect(lambda: self.uninstall_clicked.emit(self.app))
-        layout.addWidget(self.uninstall_btn)
+        layout.addWidget(self.uninstall_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def set_row_width(self, width: int):
+        """Fit labels to the list viewport width (horizontal scroll stays off)."""
+        if width <= 0:
+            return
+        btn_w = self.launch_btn.sizeHint().width() + self.uninstall_btn.sizeHint().width()
+        if self.app.update_available and hasattr(self, "update_btn"):
+            btn_w += self.update_btn.sizeHint().width()
+        text_w = max(80, width - 36 - btn_w - 48)
+        fm_name = QFontMetrics(self.name_label.font())
+        fm_sub = QFontMetrics(self.sub_label.font())
+        self.name_label.setText(
+            fm_name.elidedText(self.app.name, Qt.TextElideMode.ElideRight, text_w)
+        )
+        self.sub_label.setText(
+            fm_sub.elidedText(self._full_sub, Qt.TextElideMode.ElideRight, text_w)
+        )
+        self.setFixedWidth(width)
+        # Let height follow content so buttons and descenders are not clipped.
+        self.setMinimumHeight(0)
+        self.setMaximumHeight(16777215)
+        self.adjustSize()
+
+    def sizeHint(self) -> QSize:
+        lay = self.layout()
+        h = lay.sizeHint().height() if lay is not None else 56
+        return QSize(self.width() or 400, max(56, h))
 
 
 class InstalledAppsDialog(QDialog):
@@ -129,8 +177,8 @@ class InstalledAppsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Installed Applications — Dropin")
-        self.setMinimumSize(560, 460)
+        self.setWindowTitle("Installed Applications")
+        self.setMinimumSize(520, 420)
         self.registry = get_registry()
         self.update_manager = UpdateManager()
         self._update_thread = None
@@ -162,6 +210,14 @@ class InstalledAppsDialog(QDialog):
         layout.addLayout(top_row)
 
         self.list_widget = QListWidget(self)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.list_widget.setSpacing(4)
+        # Theme item padding shrinks the widget area and clips buttons/text;
+        # rows carry their own padding instead.
+        self.list_widget.setStyleSheet(
+            "QListWidget::item { padding: 0px; margin: 2px 0px; }"
+        )
         layout.addWidget(self.list_widget, 1)
 
         bottom_row = QHBoxLayout()
@@ -177,11 +233,50 @@ class InstalledAppsDialog(QDialog):
 
         layout.addLayout(bottom_row)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_row_widths()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_row_widths()
+
+    def _clear_list_widgets(self):
+        """QListWidget.clear() does not destroy setItemWidget children — remove them."""
+        while self.list_widget.count() > 0:
+            item = self.list_widget.takeItem(0)
+            widget = self.list_widget.itemWidget(item)
+            if widget is not None:
+                self.list_widget.removeItemWidget(item)
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
+            del item
+        # Sweep any orphans left on the viewport from older Qt quirks.
+        for orphan in list(self.list_widget.viewport().findChildren(AppItemWidget)):
+            orphan.hide()
+            orphan.setParent(None)
+            orphan.deleteLater()
+
+    def _fit_row_widths(self):
+        viewport_w = self.list_widget.viewport().width()
+        if viewport_w <= 0:
+            return
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            widget = self.list_widget.itemWidget(item)
+            if isinstance(widget, AppItemWidget):
+                widget.set_row_width(viewport_w)
+                hint_h = max(56, widget.sizeHint().height())
+                item.setSizeHint(QSize(viewport_w, hint_h))
+
     def load_apps(self):
-        self.list_widget.clear()
+        self._clear_list_widgets()
         search = self.search_input.text()
         apps = self.registry.list_apps(search)
-        self.count_label.setText(f"{len(apps)} application{'s' if len(apps) != 1 else ''} tracked")
+        self.count_label.setText(
+            f"{len(apps)} application{'s' if len(apps) != 1 else ''} tracked"
+        )
 
         if not apps:
             item = QListWidgetItem(self.list_widget)
@@ -193,18 +288,22 @@ class InstalledAppsDialog(QDialog):
             empty_lbl.setObjectName("mutedLabel")
             empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             empty_lbl.setStyleSheet("padding: 36px; font-size: 12px;")
+            empty_lbl.setWordWrap(True)
             item.setSizeHint(empty_lbl.sizeHint())
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, empty_lbl)
             return
 
+        viewport_w = max(200, self.list_widget.viewport().width())
         for app in apps:
             item = QListWidgetItem(self.list_widget)
-            widget = AppItemWidget(app, self)
+            widget = AppItemWidget(app, self.list_widget)
             widget.launch_clicked.connect(self._launch_app)
             widget.uninstall_clicked.connect(self._confirm_uninstall)
             widget.update_clicked.connect(self._start_update_install)
-            item.setSizeHint(widget.sizeHint())
+            widget.set_row_width(viewport_w)
+            hint_h = max(56, widget.sizeHint().height())
+            item.setSizeHint(QSize(viewport_w, hint_h))
             self.list_widget.addItem(item)
             self.list_widget.setItemWidget(item, widget)
 
@@ -213,14 +312,16 @@ class InstalledAppsDialog(QDialog):
             if handler.handles_format(app.format) and handler.can_launch(app):
                 if handler.launch(app):
                     return
-        # Fallback: any handler that can launch
         for handler in get_handlers():
             if handler.can_launch(app) and handler.launch(app):
                 return
         QMessageBox.warning(self, "Launch failed", f"Could not launch {app.name}.")
 
     def _confirm_uninstall(self, app: InstalledApp):
-        scope_info = f"Destination: {app.file_path or 'System'}\nLauncher: {app.launcher_path or 'Standard'}"
+        scope_info = (
+            f"Destination: {app.file_path or 'System'}\n"
+            f"Launcher: {app.launcher_path or 'Standard'}"
+        )
         msg = (
             f"Uninstall {app.name} (v{app.version})?\n\n"
             f"{scope_info}\n\n"
@@ -239,26 +340,34 @@ class InstalledAppsDialog(QDialog):
 
     def _uninstall_app(self, app: InstalledApp):
         success = False
+        matched = False
         for handler in get_handlers():
             if handler.handles_format(app.format):
+                matched = True
                 success = handler.uninstall(app)
                 break
 
-        if not success:
+        if not matched:
             for handler in get_handlers():
                 if handler.uninstall(app):
                     success = True
                     break
 
-        self.registry.delete_app(app.id)
-        self.load_apps()
         if success:
-            QMessageBox.information(self, "Uninstalled", f"{app.name} was successfully uninstalled.")
+            self.registry.delete_app(app.id)
+            self.load_apps()
+            QMessageBox.information(
+                self, "Uninstalled", f"{app.name} was successfully uninstalled."
+            )
         else:
+            # Keep the registry entry so the user can retry; refresh UI in case
+            # some files were partially removed.
+            self.load_apps()
             QMessageBox.warning(
                 self,
-                "Partial removal",
-                f"{app.name} was removed from Dropin’s list, but some files may need manual review.",
+                "Uninstall failed",
+                f"Could not fully remove {app.name}. "
+                "Could not remove all files. Check permissions and try again.",
             )
 
     def _check_updates(self):
@@ -313,7 +422,6 @@ class InstalledAppsDialog(QDialog):
         result = self._last_results.get(app.id)
         url = result.download_url if result else None
         if not url:
-            # Re-check this single app to obtain a download URL
             result = self.update_manager.check_app_update(app.id)
             url = result.download_url if result else None
         if not url:

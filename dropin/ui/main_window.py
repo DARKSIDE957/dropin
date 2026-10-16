@@ -94,12 +94,15 @@ class UpdateCheckWorker(QObject):
     finished = Signal(object)  # List[UpdateCheckResult]
 
     def run(self):
+        results = []
         try:
-            results = UpdateManager().check_all_updates()
-            self.finished.emit(results)
+            results = UpdateManager().check_all_updates() or []
         except Exception as e:
-            get_logger().error(f"Startup update check failed: {e}")
-            self.finished.emit([])
+            try:
+                get_logger().error(f"Startup update check failed: {e}")
+            except Exception:
+                pass
+        self.finished.emit(results)
 
 
 def local_path_from_input(text: str) -> Optional[str]:
@@ -160,7 +163,9 @@ class MainWindow(QMainWindow):
 
         self._init_ui()
         self._update_installed_badge()
-        QTimer.singleShot(800, self._maybe_check_updates_on_startup)
+        # Skip background update thread under automated E2E (DROPIN_E2E=1).
+        if os.environ.get("DROPIN_E2E") != "1":
+            QTimer.singleShot(800, self._maybe_check_updates_on_startup)
 
     def _init_ui(self):
         # Apply system theme automatically
@@ -334,9 +339,23 @@ class MainWindow(QMainWindow):
                 fade_widget(page, 180)
 
     def _return_to_landing(self):
-        self._show_page(0)
+        self._show_page(0, animate=False)
         self.url_input.clear()
         self._update_installed_badge()
+
+    def closeEvent(self, event):
+        for cleaner in (
+            self._clean_download_thread,
+            self._clean_resolve_thread,
+        ):
+            try:
+                cleaner()
+            except Exception:
+                pass
+        if self._install_thread and self._install_thread.isRunning():
+            self._install_thread.quit()
+            self._install_thread.wait(3000)
+        super().closeEvent(event)
 
     def _open_pick_file_dialog(self):
         """Show local installable packages; click one to start install."""
@@ -375,21 +394,33 @@ class MainWindow(QMainWindow):
             return
         if not self.registry.list_apps():
             return
-        if self._update_thread and self._update_thread.isRunning():
+        if getattr(self, "_update_check_running", False):
             return
 
-        self._update_thread = QThread()
-        self._update_worker = UpdateCheckWorker()
-        self._update_worker.moveToThread(self._update_thread)
-        self._update_worker.finished.connect(self._on_startup_updates_finished)
-        self._update_thread.started.connect(self._update_worker.run)
-        self._update_thread.start()
+        # Use a Python thread + queued Qt signal instead of QThread.
+        # QThread teardown under PySide6/Python 3.14 was aborting on startup.
+        import threading
+
+        self._update_check_running = True
+        notifier = UpdateCheckWorker(self)
+        self._update_worker = notifier
+        notifier.finished.connect(self._on_startup_updates_finished)
+
+        def _run():
+            results = []
+            try:
+                results = UpdateManager().check_all_updates() or []
+            except Exception as e:
+                try:
+                    get_logger().error(f"Startup update check failed: {e}")
+                except Exception:
+                    pass
+            notifier.finished.emit(results)
+
+        threading.Thread(target=_run, name="dropin-update-check", daemon=True).start()
 
     def _on_startup_updates_finished(self, results: object):
-        if self._update_thread and self._update_thread.isRunning():
-            self._update_thread.quit()
-            self._update_thread.wait()
-        self._update_thread = None
+        self._update_check_running = False
         self._update_worker = None
 
         if not isinstance(results, list):
@@ -400,8 +431,6 @@ class MainWindow(QMainWindow):
         if not get_config().get("notify_updates", True):
             return
 
-        names = ", ".join(r.app_id for r in updates[:5])
-        # Prefer display names from registry when available
         display_names = []
         for r in updates[:5]:
             app = self.registry.get_app(r.app_id)
@@ -409,19 +438,24 @@ class MainWindow(QMainWindow):
         names = ", ".join(display_names)
         extra = f" (+{len(updates) - 5} more)" if len(updates) > 5 else ""
 
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Information)
-        box.setWindowTitle("Updates available")
-        box.setText(
-            f"Dropin found updates for {len(updates)} app"
-            f"{'s' if len(updates) != 1 else ''}:\n{names}{extra}"
-        )
-        box.setInformativeText("Open Installed apps to review and update.")
-        open_btn = box.addButton("Open Apps", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Close)
-        box.exec()
-        if box.clickedButton() == open_btn:
-            self._open_installed_dialog()
+        def _show():
+            if not self.isVisible():
+                return
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("Updates available")
+            box.setText(
+                f"Dropin found updates for {len(updates)} app"
+                f"{'s' if len(updates) != 1 else ''}:\n{names}{extra}"
+            )
+            box.setInformativeText("Open Installed apps to review and update.")
+            open_btn = box.addButton("Open Apps", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Close)
+            box.exec()
+            if box.clickedButton() == open_btn:
+                self._open_installed_dialog()
+
+        QTimer.singleShot(0, _show)
 
     # --- INPUT HANDLING ---
 
@@ -430,7 +464,8 @@ class MainWindow(QMainWindow):
         self._current_package_info = info
         if get_config().get("confirm_installations", True):
             self.confirmation_view.set_package_info(info)
-            self._show_page(1)
+            # No page fade — opacity effects here blanked the details card.
+            self._show_page(1, animate=False)
         else:
             self._on_install_confirmed(info)
 
@@ -449,10 +484,11 @@ class MainWindow(QMainWindow):
         self._update_id = ""
 
         # Show progress immediately so the UI never looks frozen while inspecting.
+        self.progress_view.set_package(None)
         self.progress_view.set_operation(
             title="Reading package",
             status="Inspecting file…",
-            percent=-1,
+            percent=1,
             detail=path.name,
             can_cancel=False,
         )
@@ -502,10 +538,11 @@ class MainWindow(QMainWindow):
 
         self.install_url_btn.setEnabled(False)
         self.install_url_btn.setText("…")
+        self.progress_view.set_package(None)
         self.progress_view.set_operation(
             title="Looking up URL",
             status="Resolving download or GitHub release…",
-            percent=-1,
+            percent=1,
             detail=url[:80] + ("…" if len(url) > 80 else ""),
             can_cancel=False,
         )
@@ -601,10 +638,11 @@ class MainWindow(QMainWindow):
         expected_sha256: str = "",
         expected_format: Optional[PackageFormat] = None,
     ):
+        self.progress_view.set_package(None)
         self.progress_view.set_operation(
             title=f"Downloading {filename}",
             status="Connecting securely…",
-            percent=-1,
+            percent=1,
             detail="Validating URL, HTTPS, and redirect safety…",
             can_cancel=True,
         )
@@ -650,7 +688,7 @@ class MainWindow(QMainWindow):
         self.progress_view.set_operation(
             title="Reading package",
             status="Inspecting downloaded file…",
-            percent=-1,
+            percent=1,
             detail=filename,
             can_cancel=False,
         )
@@ -720,17 +758,31 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"No handler found for format: {info.format.value}")
             return
 
+        # Per-install folder from confirmation (None → handler uses Settings default).
+        dest_override = self.confirmation_view.destination_override
+        if dest_override is not None:
+            info.target_destination = str(dest_override)
+
+        self.progress_view.set_package(info)
         self.progress_view.set_operation(
             title=f"Installing {info.name}",
             status="Starting installation…",
-            percent=-1,
-            detail="Setting up permissions and desktop integration…",
+            percent=1,
+            detail=(
+                f"Installing to {dest_override}…"
+                if dest_override
+                else "Setting up permissions and desktop integration…"
+            ),
             can_cancel=False,
+            package=info,
         )
         self._show_page(2, animate=False)
+        # Force a paint before the worker starts so Wayland shows the page.
+        self.progress_view.repaint()
+        QApplication.processEvents()
 
         self._install_thread = QThread()
-        self._install_worker = InstallWorker(handler, info)
+        self._install_worker = InstallWorker(handler, info, dest_dir=dest_override)
         self._install_worker.moveToThread(self._install_thread)
 
         self._install_worker.progress.connect(self._on_install_progress)
@@ -740,13 +792,16 @@ class MainWindow(QMainWindow):
         self._install_thread.start()
 
     def _on_install_progress(self, percent: int, message: str):
+        info = self._current_package_info
         self.progress_view.set_operation(
-            title=f"Installing {self._current_package_info.name}",
+            title=f"Installing {info.name if info else 'application'}",
             status=message,
-            percent=percent,
+            percent=max(1, percent),
             detail="",
-            can_cancel=False
+            can_cancel=False,
+            package=info,
         )
+
 
     def _on_install_finished(self, result: InstallResult):
         if self._install_thread and self._install_thread.isRunning():

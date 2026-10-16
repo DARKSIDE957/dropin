@@ -177,29 +177,66 @@ class AppImageHandler(BaseHandler):
         get_logger().info(f"Uninstalling AppImage {app.name} ({app.id})")
         errors = []
 
-        # 1. Remove binary
-        if app.file_path and Path(app.file_path).is_file():
-            try:
-                Path(app.file_path).unlink()
-            except Exception as e:
-                errors.append(f"Failed to remove binary: {e}")
+        # Candidate binaries: registry path and launch_command (may differ if path drifted).
+        binaries: list[Path] = []
+        for raw in (app.file_path, app.launch_command):
+            if not raw:
+                continue
+            p = Path(raw.strip().strip('"'))
+            if p not in binaries:
+                binaries.append(p)
 
-        # 2. Remove desktop launcher
-        if app.launcher_path and Path(app.launcher_path).is_file():
+        removed_any = False
+        for binary in binaries:
+            if not binary.is_file():
+                continue
             try:
-                Path(app.launcher_path).unlink()
+                binary.unlink()
+                removed_any = True
+                get_logger().info(f"Removed AppImage binary: {binary}")
             except Exception as e:
-                errors.append(f"Failed to remove launcher: {e}")
+                errors.append(f"Failed to remove binary {binary}: {e}")
 
-        # 3. Remove icon
+        # Launchers: recorded path plus the canonical Dropin-managed desktop file.
+        launchers: list[Path] = []
+        if app.launcher_path:
+            launchers.append(Path(app.launcher_path))
+        if app.id:
+            launchers.append(
+                Path.home() / ".local" / "share" / "applications" / f"{app.id}.desktop"
+            )
+        seen_launchers: set[Path] = set()
+        for launcher in launchers:
+            if launcher in seen_launchers:
+                continue
+            seen_launchers.add(launcher)
+            if not launcher.is_file():
+                continue
+            try:
+                launcher.unlink()
+                removed_any = True
+            except Exception as e:
+                errors.append(f"Failed to remove launcher {launcher}: {e}")
+
         if app.icon_path and Path(app.icon_path).is_file():
             try:
                 Path(app.icon_path).unlink()
             except Exception:
                 pass
 
-        # 4. Update desktop database
         self._update_desktop_db()
+
+        # Still-present binaries mean uninstall failed (do not report success).
+        still_there = [str(p) for p in binaries if p.is_file()]
+        if still_there:
+            errors.append(f"AppImage still on disk: {', '.join(still_there)}")
+            get_logger().error(f"Uninstall incomplete for {app.id}: {errors}")
+            return False
+
+        if not removed_any and binaries and not any(p.exists() for p in binaries):
+            # Already gone — treat as success so the registry can drop the stale entry.
+            get_logger().info(f"AppImage already absent for {app.id}; cleaning registry entry")
+            return True
 
         return len(errors) == 0
 

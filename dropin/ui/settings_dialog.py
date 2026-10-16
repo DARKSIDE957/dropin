@@ -36,7 +36,7 @@ from dropin.ui.animations import fade_widget
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Settings — Dropin")
+        self.setWindowTitle("Settings")
         self.setMinimumSize(560, 420)
         self.resize(600, 460)
         self.cfg = get_config()
@@ -137,9 +137,19 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(4, 4, 8, 4)
         layout.setSpacing(16)
 
+        hint = QLabel(
+            "These are the default folders for new installs. On the confirm screen "
+            "you can optionally choose a different folder for that install only; "
+            "if you skip it, Dropin uses the defaults below.",
+            page,
+        )
+        hint.setObjectName("mutedLabel")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
         appimage_group, self.appimage_input = self._path_block(
             page,
-            "AppImage Storage Directory",
+            "AppImage Storage Directory (default)",
             self._browse_appimage_dir,
             lambda: self.appimage_input.setText(DEFAULT_CONFIG["appimage_dir"]),
         )
@@ -147,7 +157,7 @@ class SettingsDialog(QDialog):
 
         port_group, self.portable_input = self._path_block(
             page,
-            "Portable Applications Directory",
+            "Portable Applications Directory (default)",
             self._browse_portable_dir,
             lambda: self.portable_input.setText(DEFAULT_CONFIG["portable_dir"]),
         )
@@ -156,11 +166,11 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._make_section_label("Flatpak Installation Scope", page))
 
         self.flatpak_user_rb = QRadioButton(
-            "User installation (~/.local/share/flatpak) — Recommended",
+            "User installation (~/.local/share/flatpak), recommended",
             page,
         )
         self.flatpak_system_rb = QRadioButton(
-            "System-wide (/var/lib/flatpak) — Requires root",
+            "System-wide (/var/lib/flatpak), requires administrator",
             page,
         )
         for rb in (self.flatpak_user_rb, self.flatpak_system_rb):
@@ -248,7 +258,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.chk_https)
 
         self.chk_content = QCheckBox(
-            "Verify package content (magic bytes — reject HTML/API error pages)",
+            "Verify package content (reject HTML or API error pages)",
             page,
         )
         self.chk_content.setMinimumHeight(24)
@@ -289,7 +299,7 @@ class SettingsDialog(QDialog):
         size_box.addWidget(self.spin_size)
         layout.addLayout(size_box)
 
-        audit_btn = QPushButton("View Security & Installation Audit Logs…", page)
+        audit_btn = QPushButton("View security and installation history…", page)
         audit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         audit_btn.clicked.connect(self._open_audit_dialog)
         layout.addWidget(audit_btn)

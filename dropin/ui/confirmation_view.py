@@ -1,9 +1,12 @@
 """
 Installation confirmation view for Dropin.
-Displays application metadata, security considerations, destination, and permissions.
+Displays application metadata, destination (with optional per-install override),
+and permissions.
 """
 
 from pathlib import Path
+from typing import Optional
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
@@ -14,10 +17,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QFrame,
     QSizePolicy,
+    QFileDialog,
 )
 
-from dropin.core.models import AppPackageInfo
-from dropin.ui.animations import fade_widget
+from dropin.core.config import get_config
+from dropin.core.models import AppPackageInfo, PackageFormat
 
 
 class ConfirmationView(QWidget):
@@ -26,7 +30,9 @@ class ConfirmationView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.info: AppPackageInfo = None
+        self.info: Optional[AppPackageInfo] = None
+        self._default_dest: str = ""
+        self._override_dest: Optional[Path] = None
         self._init_ui()
 
     def _init_ui(self):
@@ -53,7 +59,9 @@ class ConfirmationView(QWidget):
         title_box.setSpacing(4)
 
         self.name_label = QLabel("Application Name", self)
-        self.name_label.setStyleSheet("font-size: 16px; font-weight: 700; background: transparent;")
+        self.name_label.setStyleSheet(
+            "font-size: 16px; font-weight: 700; background: transparent;"
+        )
         self.name_label.setWordWrap(True)
         title_box.addWidget(self.name_label)
 
@@ -86,8 +94,8 @@ class ConfirmationView(QWidget):
 
         self.meta_frame = QFrame(self)
         meta_layout = QVBoxLayout(self.meta_frame)
-        meta_layout.setContentsMargins(0, 2, 0, 2)
-        meta_layout.setSpacing(8)
+        meta_layout.setContentsMargins(0, 4, 0, 4)
+        meta_layout.setSpacing(10)
 
         self.publisher_row = self._create_info_row("Source")
         self.dest_row = self._create_info_row("Destination")
@@ -105,6 +113,33 @@ class ConfirmationView(QWidget):
             self.content_row,
         ):
             meta_layout.addLayout(row[0])
+
+        # Per-install destination override (AppImage / portable archives)
+        dest_btns = QHBoxLayout()
+        dest_btns.setSpacing(8)
+        self.choose_dest_btn = QPushButton(
+            "Choose folder for this install (optional)", self
+        )
+        self.choose_dest_btn.setObjectName("compactBtn")
+        self.choose_dest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.choose_dest_btn.setToolTip(
+            "Optional. Pick a folder for this install only. "
+            "If you skip this, the app installs to the location set in Settings."
+        )
+        self.choose_dest_btn.clicked.connect(self._choose_destination)
+        dest_btns.addWidget(self.choose_dest_btn)
+
+        self.clear_dest_btn = QPushButton("Use Settings location", self)
+        self.clear_dest_btn.setObjectName("compactBtn")
+        self.clear_dest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_dest_btn.setToolTip(
+            "Clear the folder override and use the location from Settings."
+        )
+        self.clear_dest_btn.clicked.connect(self._clear_destination_override)
+        self.clear_dest_btn.hide()
+        dest_btns.addWidget(self.clear_dest_btn)
+        dest_btns.addStretch()
+        meta_layout.addLayout(dest_btns)
 
         card_layout.addWidget(self.meta_frame)
         main_layout.addWidget(self.card, 1)
@@ -126,13 +161,13 @@ class ConfirmationView(QWidget):
         main_layout.addLayout(btn_layout)
 
     def _create_info_row(self, label_text: str):
-        """Stacked key/value rows so labels never collide horizontally."""
         col = QVBoxLayout()
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(2)
+        col.setSpacing(3)
 
         lbl = QLabel(label_text, self)
         lbl.setObjectName("metaKey")
+        lbl.setWordWrap(False)
         val = QLabel("", self)
         val.setObjectName("metaValue")
         val.setWordWrap(True)
@@ -143,8 +178,59 @@ class ConfirmationView(QWidget):
         col.addWidget(val)
         return (col, lbl, val)
 
+    @property
+    def destination_override(self) -> Optional[Path]:
+        """Folder for this install only, or None to use Settings default."""
+        return self._override_dest
+
+    def _default_destination_for(self, info: AppPackageInfo) -> str:
+        cfg = get_config()
+        if info.format == PackageFormat.APPIMAGE:
+            return str(cfg.appimage_dir)
+        if info.format == PackageFormat.ARCHIVE:
+            return str(cfg.portable_dir)
+        return info.target_destination or ""
+
+    def _refresh_destination_label(self):
+        if self._override_dest is not None:
+            self.dest_row[2].setText(f"{self._override_dest}  (this install only)")
+            self.clear_dest_btn.show()
+        else:
+            label = self._default_dest or (self.info.target_destination if self.info else "")
+            if self.info and self.info.can_customize_destination:
+                self.dest_row[2].setText(
+                    f"{label}  (from Settings, unless you choose another folder)"
+                )
+            else:
+                self.dest_row[2].setText(label or "Not set")
+            self.clear_dest_btn.hide()
+
+    def _choose_destination(self):
+        start = str(self._override_dest or self._default_dest or Path.home())
+        chosen = QFileDialog.getExistingDirectory(
+            self,
+            "Choose install folder for this app",
+            start,
+        )
+        if not chosen:
+            return
+        self._override_dest = Path(chosen)
+        if self.info is not None:
+            self.info.target_destination = chosen
+        self._refresh_destination_label()
+
+    def _clear_destination_override(self):
+        self._override_dest = None
+        if self.info is not None:
+            self.info.target_destination = self._default_dest
+        self._refresh_destination_label()
+
     def set_package_info(self, info: AppPackageInfo):
         self.info = info
+        self._override_dest = None
+        self._default_dest = self._default_destination_for(info) or (
+            info.target_destination or ""
+        )
 
         self.name_label.setText(info.name)
         self.format_badge.setText(info.format.value)
@@ -162,7 +248,8 @@ class ConfirmationView(QWidget):
             self.icon_label.setStyleSheet("")
             self.icon_label.setPixmap(
                 pixmap.scaled(
-                    48, 48,
+                    48,
+                    48,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
@@ -182,36 +269,51 @@ class ConfirmationView(QWidget):
             self.icon_label.setStyleSheet("font-size: 28px; background: transparent;")
 
         self.publisher_row[2].setText(info.publisher or "Independent publisher")
-        self.dest_row[2].setText(info.target_destination or "~/Applications")
+        self._refresh_destination_label()
+        self.choose_dest_btn.setVisible(bool(info.can_customize_destination))
+        if not info.can_customize_destination:
+            self.clear_dest_btn.hide()
 
         if info.requires_root:
             perm_text = "Administrator privileges (system package manager)"
         else:
-            perm_text = "Standard user — no administrator rights needed"
+            perm_text = "Standard user, no administrator rights needed"
         self.perms_row[2].setText(perm_text)
 
-        size_mb = f"{info.size_bytes / (1024 * 1024):.1f} MB" if info.size_bytes > 0 else "Unknown"
+        size_mb = (
+            f"{info.size_bytes / (1024 * 1024):.1f} MB"
+            if info.size_bytes > 0
+            else "Unknown"
+        )
         self.size_row[2].setText(size_mb)
 
         if info.sha256:
             short = f"{info.sha256[:16]}…{info.sha256[-8:]}"
             if info.integrity_verified:
-                self.integrity_row[2].setText(f"Verified against upstream digest — {short}")
+                self.integrity_row[2].setText(
+                    f"Matches the publisher checksum ({short})"
+                )
             elif info.expected_sha256:
-                self.integrity_row[2].setText(info.integrity_message or f"Computed {short}")
+                self.integrity_row[2].setText(
+                    info.integrity_message or f"Checksum: {short}"
+                )
             else:
                 self.integrity_row[2].setText(
-                    f"Computed {short} (no upstream digest published — hash shown for your records)"
+                    f"Checksum: {short} (publisher did not provide one to compare)"
                 )
         else:
-            self.integrity_row[2].setText("Not computed (local file)")
+            self.integrity_row[2].setText("Not needed for a file already on your computer")
 
         if info.content_verified:
-            self.content_row[2].setText(info.integrity_message or "Package magic bytes match expected format")
+            self.content_row[2].setText(
+                info.integrity_message or "File type looks correct for this package format"
+            )
         elif info.sha256:
-            self.content_row[2].setText("Pending / skipped")
+            self.content_row[2].setText("Not checked yet")
         else:
-            self.content_row[2].setText("Local file — content inspected by handler")
+            self.content_row[2].setText(
+                "File type looks correct for this package format"
+            )
 
         if not info.compatibility_ok:
             self.warning_banner.setText(f"⚠️  {info.compatibility_reason}")
@@ -222,8 +324,6 @@ class ConfirmationView(QWidget):
             self.warning_banner.hide()
             self.install_btn.setEnabled(True)
             self.install_btn.setText("Install")
-
-        fade_widget(self.card, 200)
 
     def _on_install_clicked(self):
         if self.info and self.info.compatibility_ok:

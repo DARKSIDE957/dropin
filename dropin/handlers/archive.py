@@ -227,17 +227,49 @@ class ArchiveHandler(BaseHandler):
     def uninstall(self, app: InstalledApp) -> bool:
         get_logger().info(f"Removing portable app {app.name} at {app.file_path}")
         errors = []
-        if app.file_path and Path(app.file_path).is_dir():
-            try:
-                shutil.rmtree(app.file_path)
-            except Exception as e:
-                errors.append(str(e))
+        removed_any = False
 
-        if app.launcher_path and Path(app.launcher_path).is_file():
-            try:
-                Path(app.launcher_path).unlink()
-            except Exception:
-                pass
+        targets: list[Path] = []
+        if app.file_path:
+            targets.append(Path(app.file_path))
+
+        for target in targets:
+            if target.is_dir():
+                try:
+                    shutil.rmtree(target)
+                    removed_any = True
+                except Exception as e:
+                    errors.append(f"Failed to remove {target}: {e}")
+            elif target.is_file():
+                try:
+                    target.unlink()
+                    removed_any = True
+                except Exception as e:
+                    errors.append(f"Failed to remove {target}: {e}")
+
+        launchers: list[Path] = []
+        if app.launcher_path:
+            launchers.append(Path(app.launcher_path))
+        if app.id:
+            launchers.append(
+                Path.home() / ".local" / "share" / "applications" / f"{app.id}.desktop"
+            )
+        for launcher in dict.fromkeys(launchers):
+            if launcher.is_file():
+                try:
+                    launcher.unlink()
+                    removed_any = True
+                except Exception:
+                    pass
+
+        still_there = [str(t) for t in targets if t.exists()]
+        if still_there:
+            errors.append(f"Portable app still on disk: {', '.join(still_there)}")
+            return False
+
+        if not removed_any and targets and not any(t.exists() for t in targets):
+            return True
+
         return len(errors) == 0
 
     def _extract_clean_name(self, filename: str) -> str:

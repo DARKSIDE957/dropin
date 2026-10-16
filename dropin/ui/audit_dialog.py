@@ -20,7 +20,7 @@ from dropin.core.registry import get_registry
 class AuditDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Security & Audit Logs — Dropin")
+        self.setWindowTitle("Security and Audit Logs")
         self.resize(640, 400)
         self.registry = get_registry()
         self._init_ui()
@@ -31,7 +31,7 @@ class AuditDialog(QDialog):
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
-        header = QLabel("Dropin Security & Installation Audit Trail", self)
+        header = QLabel("Security and installation history", self)
         header.setStyleSheet("font-size: 14px; font-weight: 700;")
         layout.addWidget(header)
 
