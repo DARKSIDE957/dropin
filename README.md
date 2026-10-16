@@ -80,8 +80,6 @@ See [SECURITY.md](SECURITY.md) for details.
 
 ## Support
 
-Logs: `~/.local/share/dropin/dropin.log`
-
 [Ko-fi](https://ko-fi.com/c/4e4397f93e)
 
 ---
