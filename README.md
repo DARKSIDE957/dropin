@@ -17,6 +17,8 @@ After a one-time setup, you can install packages by dropping a file onto the win
 
 Works on Ubuntu, Fedora, Arch, openSUSE, and similar desktop distributions.
 
+Dropin is still new and early in development. If something breaks, feels unclear, or does not work as expected, please [open an issue](https://github.com/DARKSIDE957/dropin/issues) and share what you ran into. Reports like that help a lot.
+
 ---
 
 ## Install
