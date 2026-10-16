@@ -80,10 +80,12 @@ See [SECURITY.md](SECURITY.md) for details.
 
 ## Support
 
+If Dropin has been useful, you can support the project on Ko-fi.
+
 [Ko-fi](https://ko-fi.com/c/4e4397f93e)
 
----
-
 ## License
+
+Dropin is free and open source under the MIT License.
 
 [MIT](LICENSE)
