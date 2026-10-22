@@ -15,7 +15,9 @@ from dropin.handlers.deb import DebHandler
 from dropin.handlers.rpm import RpmHandler
 from dropin.handlers.flatpak import FlatpakHandler
 from dropin.handlers.archive import ArchiveHandler
-from dropin.handlers import detect_and_inspect
+from dropin.handlers.snap import SnapHandler
+from dropin.handlers.system_pkg import SystemPkgHandler
+from dropin.handlers import detect_and_inspect, get_handlers
 
 
 def _distro(**overrides) -> DistributionInfo:
@@ -275,6 +277,109 @@ class TestHandlers(unittest.TestCase):
         chosen = handler._find_primary_executable(tree, "Android Studio")
         self.assertIsNotNone(chosen)
         self.assertEqual(chosen.name, "studio.sh")
+
+    def test_snap_handler_detection(self):
+        handler = SnapHandler()
+        snap_file = self.work_dir / "TestApp.snap"
+        snap_file.write_bytes(b"hsqs" + b"\x00" * 100)
+        self.assertTrue(handler.can_handle(snap_file))
+        # Squashfs magic is recognised even without the .snap extension,
+        # and plain gzip data is not mistaken for a snap.
+        no_ext = self.work_dir / "TestApp"
+        no_ext.write_bytes(b"hsqs" + b"\x00" * 100)
+        self.assertTrue(handler.can_handle(no_ext))
+        gzip_file = self.work_dir / "archive.tar.gz"
+        gzip_file.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 100)
+        self.assertFalse(handler.can_handle(gzip_file))
+
+    def test_snap_handler_inspect(self):
+        handler = SnapHandler()
+        snap_file = self.work_dir / "TestApp.snap"
+        snap_file.write_bytes(b"\\x1f\\x8b\\x08\\x00" + b"\\x00" * 100)
+        distro = _distro()
+        with mock.patch(
+            "dropin.handlers.snap.get_current_distribution", return_value=distro
+        ), mock.patch.object(SnapHandler, "_read_snap_meta", return_value=None):
+            info = handler.inspect(snap_file)
+        self.assertEqual(info.format, PackageFormat.SNAP)
+        self.assertEqual(info.name, "TestApp")
+        self.assertTrue(info.requires_root)
+
+    def test_system_pkg_can_handle_returns_false(self):
+        handler = SystemPkgHandler()
+        self.assertFalse(handler.can_handle(Path("/some/file.deb")))
+
+    def test_system_pkg_detects_package_manager(self):
+        pm = SystemPkgHandler.detect_package_manager()
+        # On any system with apt/dnf/pacman/etc., this should return a dict.
+        if pm:
+            self.assertIn("name", pm)
+            self.assertIn("install", pm)
+
+    def test_system_pkg_rejects_bad_package_names(self):
+        handler = SystemPkgHandler()
+        for bad in ("foo bar", "--installroot=/tmp", "-y", "pkg;rm"):
+            info = AppPackageInfo(
+                name=bad,
+                version="",
+                format=PackageFormat.SYSTEM_PKG,
+                architecture="x86_64",
+                file_path="",
+            )
+            with mock.patch.object(
+                SystemPkgHandler,
+                "detect_package_manager",
+                return_value={"name": "dnf"},
+            ):
+                result = handler.install(info)
+            self.assertFalse(result.success, bad)
+            self.assertIn("package name", result.message)
+
+    def test_system_pkg_atomic_uses_rpm_ostree(self):
+        atomic = _distro(
+            id="bazzite", name="Bazzite", is_atomic=True, has_rpm_ostree=True
+        )
+        with mock.patch(
+            "dropin.handlers.system_pkg.get_current_distribution",
+            return_value=atomic,
+        ):
+            pm = SystemPkgHandler.detect_package_manager()
+        if pm:  # rpm-ostree may not exist on the test machine
+            self.assertEqual(pm["name"], "rpm-ostree")
+
+    def test_downloader_oversize_names_the_limit(self):
+        from unittest.mock import MagicMock
+
+        from dropin.network.downloader import DownloadWorker
+
+        worker = DownloadWorker("https://example.com/big.AppImage")
+        errors = []
+        worker.error.connect(errors.append)
+
+        response = MagicMock()
+        response.__enter__ = MagicMock(return_value=response)
+        response.__exit__ = MagicMock(return_value=False)
+        response.getstatus.return_value = 200
+        response.geturl.return_value = "https://example.com/big.AppImage"
+        response.headers = {"Content-Length": str(40 * 1024 * 1024 * 1024)}
+
+        with mock.patch(
+            "urllib.request.urlopen", return_value=response
+        ), mock.patch(
+            "dropin.network.downloader.validate_final_url",
+            return_value=(True, ""),
+        ):
+            worker.run()
+
+        self.assertTrue(errors, "expected an oversize error")
+        self.assertIn("MB", errors[0])
+        self.assertNotIn("max_size_mb", errors[0])
+
+    def test_get_handlers_includes_new(self):
+        handlers = get_handlers()
+        names = {type(h).__name__ for h in handlers}
+        self.assertIn("SnapHandler", names)
+        self.assertIn("SystemPkgHandler", names)
 
 
 if __name__ == "__main__":

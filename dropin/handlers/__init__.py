@@ -13,6 +13,8 @@ from dropin.handlers.deb import DebHandler
 from dropin.handlers.rpm import RpmHandler
 from dropin.handlers.flatpak import FlatpakHandler
 from dropin.handlers.archive import ArchiveHandler
+from dropin.handlers.snap import SnapHandler
+from dropin.handlers.system_pkg import SystemPkgHandler
 
 
 _HANDLERS: Optional[List[BaseHandler]] = None
@@ -26,7 +28,9 @@ def get_handlers() -> List[BaseHandler]:
             DebHandler(),
             RpmHandler(),
             FlatpakHandler(),
-            ArchiveHandler()
+            ArchiveHandler(),
+            SnapHandler(),
+            SystemPkgHandler(),
         ]
     return _HANDLERS
 
@@ -57,6 +61,6 @@ def detect_and_inspect(file_path: Path) -> AppPackageInfo:
             f"The file '{file_path.name}' is not in a supported format. "
             "Dropin supports AppImage (.AppImage), Debian packages (.deb), "
             "RPM packages (.rpm), Flatpak references (.flatpakref/.flatpak), "
-            "and portable archives (.tar.gz, .tar.xz, .zip)."
+            "portable archives (.tar.gz, .tar.xz, .zip), and Snap packages (.snap)."
         )
     )

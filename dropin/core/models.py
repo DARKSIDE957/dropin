@@ -6,6 +6,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict, Any
 
+# Distro family groupings for package-manager compatibility (defined here to
+# avoid a circular import with dropin.core.distro).
+_DEBIAN_FAMILY = {"debian", "ubuntu", "pop", "mint", "elementary", "zorin", "kali", "linuxmint"}
+_FEDORA_FAMILY = {"fedora", "rhel", "centos", "almalinux", "rocky", "bazzite"}
+_ARCH_FAMILY = {"arch", "manjaro", "endeavouros", "garuda", "endeavour"}
+_SUSE_FAMILY = {"suse", "opensuse", "opensuse-leap", "opensuse-tumbleweed"}
+_ALPINE_FAMILY = {"alpine"}
+_VOID_FAMILY = {"void"}
+_MAGEIA_FAMILY = {"mageia"}
+
 
 class PackageFormat(str, Enum):
     APPIMAGE = "AppImage"
@@ -13,6 +23,9 @@ class PackageFormat(str, Enum):
     RPM = "RPM"
     FLATPAK = "Flatpak"
     ARCHIVE = "Archive"
+    SNAP = "Snap"
+    SYSTEM_PKG = "System Package"
+    APPSTREAM = "AppStream"
     UNKNOWN = "Unknown"
 
     @classmethod
@@ -26,6 +39,8 @@ class PackageFormat(str, Enum):
             return cls.RPM
         elif lower.endswith(".flatpakref") or lower.endswith(".flatpak"):
             return cls.FLATPAK
+        elif lower.endswith(".snap"):
+            return cls.SNAP
         elif lower.endswith(".tar.gz") or lower.endswith(".tar.xz") or lower.endswith(".tar.bz2") or lower.endswith(".zip") or lower.endswith(".tgz"):
             return cls.ARCHIVE
         return cls.UNKNOWN
@@ -46,28 +61,54 @@ class DistributionInfo:
     has_pacman: bool = False
     has_flatpak: bool = False
     has_pkexec: bool = False
+    has_snap: bool = False
+    has_apk: bool = False
+    has_xbps: bool = False
+    has_urpmi: bool = False
     is_atomic: bool = False
     has_rpm_ostree: bool = False
 
     @property
     def is_debian_family(self) -> bool:
         family = [self.id.lower()] + [x.lower() for x in self.id_like]
-        return any(x in ["debian", "ubuntu", "pop", "mint", "elementary", "zorin", "kali"] for x in family) or self.has_apt or self.has_dpkg
+        return (
+            any(x in _DEBIAN_FAMILY for x in family)
+            or self.has_apt
+            or self.has_dpkg
+        )
 
     @property
     def is_fedora_family(self) -> bool:
         family = [self.id.lower()] + [x.lower() for x in self.id_like]
-        return any(x in ["fedora", "rhel", "centos", "almalinux", "rocky", "bazzite"] for x in family) or (self.has_dnf and self.has_rpm)
+        return (
+            any(x in _FEDORA_FAMILY for x in family)
+            or (self.has_dnf and self.has_rpm)
+        )
 
     @property
     def is_arch_family(self) -> bool:
         family = [self.id.lower()] + [x.lower() for x in self.id_like]
-        return any(x in ["arch", "manjaro", "endeavouros", "garuda"] for x in family) or self.has_pacman
+        return any(x in _ARCH_FAMILY for x in family) or self.has_pacman
 
     @property
     def is_suse_family(self) -> bool:
         family = [self.id.lower()] + [x.lower() for x in self.id_like]
-        return any(x in ["suse", "opensuse", "opensuse-leap", "opensuse-tumbleweed"] for x in family) or self.has_zypper
+        return any(x in _SUSE_FAMILY for x in family) or self.has_zypper
+
+    @property
+    def is_alpine_family(self) -> bool:
+        family = [self.id.lower()] + [x.lower() for x in self.id_like]
+        return any(x in _ALPINE_FAMILY for x in family) or self.has_apk
+
+    @property
+    def is_void_family(self) -> bool:
+        family = [self.id.lower()] + [x.lower() for x in self.id_like]
+        return any(x in _VOID_FAMILY for x in family) or self.has_xbps
+
+    @property
+    def is_mageia_family(self) -> bool:
+        family = [self.id.lower()] + [x.lower() for x in self.id_like]
+        return any(x in _MAGEIA_FAMILY for x in family) or self.has_urpmi
 
 
 @dataclass

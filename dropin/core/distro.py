@@ -35,7 +35,6 @@ def _read_os_release() -> Dict[str, str]:
 # os-release IDs of well-known rpm-ostree / Atomic desktops.
 _ATOMIC_IDS = {"bazzite", "bluefin", "aurora", "silverblue", "kinoite"}
 
-
 def _detect_atomic(distro_id: str = "", id_like: Optional[List[str]] = None) -> bool:
     """True on rpm-ostree based systems (Bazzite, Silverblue, Kinoite, …).
 
@@ -98,6 +97,10 @@ def detect_distribution() -> DistributionInfo:
         has_pacman=shutil.which("pacman") is not None,
         has_flatpak=shutil.which("flatpak") is not None,
         has_pkexec=shutil.which("pkexec") is not None,
+        has_snap=shutil.which("snap") is not None,
+        has_apk=shutil.which("apk") is not None,
+        has_xbps=shutil.which("xbps-install") is not None,
+        has_urpmi=shutil.which("urpmi") is not None,
         is_atomic=_detect_atomic(distro_id, id_like),
         has_rpm_ostree=shutil.which("rpm-ostree") is not None,
     )

@@ -60,7 +60,7 @@ Removes Dropin from your account. For a system-wide install: `./uninstall.sh --s
 2. Confirm the install when prompted.
 3. Manage installed apps from the Apps button; change preferences in Settings.
 
-Supported formats: AppImage, DEB, RPM, Flatpak (`.flatpakref` / `.flatpak`), and portable archives (`.tar.gz`, `.tar.xz`, `.zip`) that contain a ready binary.
+Supported formats: AppImage, DEB, RPM, Flatpak (`.flatpakref` / `.flatpak`), Snap (`.snap`), and portable archives (`.tar.gz`, `.tar.xz`, `.zip`) that contain a ready binary. You can also type a package name to install it from your distribution's own repositories.
 
 ---
 

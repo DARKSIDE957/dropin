@@ -234,7 +234,8 @@ class ConfirmationView(QWidget):
 
         self.name_label.setText(info.name)
         self.format_badge.setText(info.format.value)
-        self.version_badge.setText(f"v{info.version}")
+        self.version_badge.setText(f"v{info.version}" if info.version else "")
+        self.version_badge.setVisible(bool(info.version))
         self.arch_badge.setText(info.architecture)
 
         pixmap = None

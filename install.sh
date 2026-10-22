@@ -113,6 +113,14 @@ if ! "${PIP_CMD[@]}" "${PIP_FLAGS[@]}"; then
         sudo dnf install -y python3-pyside6 python3-packaging || true
     elif command -v pacman >/dev/null 2>&1; then
         sudo pacman -S --needed --noconfirm python-pyside6 python-packaging || true
+    elif command -v zypper >/dev/null 2>&1; then
+        sudo zypper install -y python3-PySide6 python3-packaging || true
+    elif command -v apk >/dev/null 2>&1; then
+        sudo apk add pyside6 py3-packaging || true
+    elif command -v xbps-install >/dev/null 2>&1; then
+        sudo xbps-install -S python3-PySide6 python3-packaging || true
+    elif command -v urpmi >/dev/null 2>&1; then
+        sudo urpmi python3-pyside6 python3-packaging || true
     fi
 fi
 

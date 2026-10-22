@@ -91,8 +91,8 @@ class AppItemWidget(QWidget):
         self.name_label.setStyleSheet(
             "font-weight: 700; font-size: 13px; background: transparent; padding-bottom: 1px;"
         )
-        self.name_label.setWordWrap(False)
-        self.name_label.setMinimumHeight(18)
+        self.name_label.setWordWrap(True)
+        self.name_label.setMaximumHeight(34)  # two lines max, then elides
         self.name_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
@@ -108,14 +108,18 @@ class AppItemWidget(QWidget):
         self.sub_label.setStyleSheet(
             "font-size: 11px; background: transparent; padding-bottom: 1px;"
         )
-        self.sub_label.setWordWrap(False)
-        self.sub_label.setMinimumHeight(16)
+        self.sub_label.setWordWrap(True)
+        self.sub_label.setMaximumHeight(24)
         self.sub_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
+        self.sub_label.setToolTip(self._full_sub)
         info_col.addWidget(self.sub_label)
 
         layout.addLayout(info_col, 1)
+        # Stretch pushes buttons to the right edge and lets text elide/wrap
+        # instead of running into the action buttons.
+        layout.addStretch(1)
 
         btn_style = "padding: 4px 12px; font-size: 11px; min-width: 0;"
 

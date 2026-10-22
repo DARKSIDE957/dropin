@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from dropin.core.config import get_config
+from dropin.core.distro import get_current_distribution
 from dropin.core.logger import get_logger
 from dropin.core.models import AppPackageInfo, InstalledApp, InstallResult, PackageFormat, UpdateCheckResult
 from dropin.core.registry import get_registry
@@ -585,7 +586,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "URL required",
-                "Paste a download link or GitHub release URL, then click Install.",
+                "Paste a download link, GitHub release URL, or a package name, then click Install.",
             )
             self.url_input.setFocus()
             return
@@ -593,6 +594,13 @@ class MainWindow(QMainWindow):
         local = local_path_from_input(url)
         if local:
             self._handle_file_input(local)
+            return
+
+        # If the input is not a URL and not a local file, treat it as a package
+        # name to install from the distro's native package repository.
+        parsed = urllib.parse.urlparse(url)
+        if not parsed.scheme or parsed.scheme not in ("http", "https"):
+            self._install_system_package_by_name(url)
             return
 
         if self._resolve_thread and self._resolve_thread.isRunning():
@@ -617,6 +625,53 @@ class MainWindow(QMainWindow):
         self._resolve_worker.error.connect(self._on_resolve_error)
         self._resolve_thread.started.connect(self._resolve_worker.run)
         self._resolve_thread.start()
+
+    def _install_system_package_by_name(self, pkg_name: str) -> None:
+        """Install a package by name from the distro's native package repository."""
+        from dropin.handlers.system_pkg import SystemPkgHandler
+
+        handler = SystemPkgHandler()
+        pm = handler.detect_package_manager()
+        if not pm:
+            QMessageBox.warning(
+                self,
+                "No package manager",
+                "No supported native package manager (apt, dnf, zypper, pacman, "
+                "urpmi, xbps, apk) was found on this system.",
+            )
+            self._return_to_landing()
+            return
+
+        # Create an AppPackageInfo for the system package.
+        info = AppPackageInfo(
+            name=pkg_name,
+            version="",
+            format=PackageFormat.SYSTEM_PKG,
+            architecture=get_current_distribution().arch,
+            file_path="",
+            description=f"Install {pkg_name} from {pm['name']} repository",
+            publisher="Distribution Repository",
+            homepage="",
+            size_bytes=0,
+            requires_root=True,
+            target_destination=f"System ({pm['name']})",
+            can_customize_destination=False,
+            compatibility_ok=True,
+            compatibility_reason="",
+        )
+
+        self._current_package_info = info
+        self._source_url = ""
+        self._update_type = "package_manager"
+        self._update_id = pkg_name
+        self._expected_sha256 = ""
+        self._expected_format = PackageFormat.SYSTEM_PKG
+
+        if get_config().get("confirm_installations", True):
+            self.confirmation_view.set_package_info(info)
+            self._show_page(1, animate=False)
+        else:
+            self._on_install_confirmed(info)
 
     def _clean_resolve_thread(self):
         if self._resolve_thread and self._resolve_thread.isRunning():
@@ -815,10 +870,20 @@ class MainWindow(QMainWindow):
     # --- INSTALLATION EXECUTION ---
 
     def _on_install_confirmed(self, info: AppPackageInfo):
-        handler = get_handler_for_file(Path(info.file_path))
-        if not handler:
-            QMessageBox.critical(self, "Error", f"No handler found for format: {info.format.value}")
-            return
+        # System packages (installed by name) have no file path — use the
+        # SystemPkgHandler directly. Snap files have a real path, so the
+        # file-based handler lookup works for them.
+        if info.format == PackageFormat.SYSTEM_PKG or not info.file_path:
+            from dropin.handlers.system_pkg import SystemPkgHandler
+
+            handler = SystemPkgHandler()
+        else:
+            handler = get_handler_for_file(Path(info.file_path))
+            if not handler:
+                QMessageBox.critical(
+                    self, "Error", f"No handler found for format: {info.format.value}"
+                )
+                return
 
         # Per-install folder from confirmation (None → handler uses Settings default).
         dest_override = self.confirmation_view.destination_override
