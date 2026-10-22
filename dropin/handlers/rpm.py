@@ -69,11 +69,29 @@ class RpmHandler(BaseHandler):
                 f"Your distribution ({distro.name}) does not use RPM package management. "
                 "Try an AppImage or Flatpak instead."
             )
+        elif distro.is_atomic and not distro.has_rpm_ostree and not shutil.which("rpm-ostree"):
+            compat_ok = False
+            compat_reason = (
+                f"{distro.name} is a Fedora Atomic system, but rpm-ostree was not found. "
+                "RPM packages can only be layered with rpm-ostree on this system."
+            )
         else:
             # Check architecture
             if rpm_arch not in ("noarch", distro.arch):
                 compat_ok = False
                 compat_reason = f"Package architecture '{rpm_arch}' is not compatible with system architecture '{distro.arch}'."
+
+        installed_version = self._query_installed_version(pkg_name)
+        meta["already_installed"] = installed_version is not None
+        meta["installed_version"] = installed_version or ""
+        meta["atomic_system"] = bool(distro.is_atomic)
+        meta["missing_dependencies"] = (
+            self._missing_dependencies(file_path) if compat_ok else []
+        )
+
+        target = "System (RPM Package Manager)"
+        if distro.is_atomic:
+            target = "System (rpm-ostree layer, reboot required)"
 
         return AppPackageInfo(
             name=pkg_name,
@@ -86,7 +104,7 @@ class RpmHandler(BaseHandler):
             homepage=homepage,
             size_bytes=size,
             requires_root=True,
-            target_destination="System (RPM Package Manager)",
+            target_destination=target,
             can_customize_destination=False,
             compatibility_ok=compat_ok,
             compatibility_reason=compat_reason,
@@ -122,14 +140,61 @@ class RpmHandler(BaseHandler):
                 error_details=f"Path does not exist: {src_path}"
             )
 
+        # Refuse duplicate installs. The confirmation screen sets
+        # reinstall_confirmed when the user explicitly chooses Reinstall.
+        installed_version = self._query_installed_version(info.name)
+        if installed_version and not info.extra_metadata.get("reinstall_confirmed"):
+            return InstallResult(
+                success=False,
+                message=f"{info.name} is already installed.",
+                error_details=(
+                    f"{info.name} v{installed_version} is already installed on this system. "
+                    "Installing it again would not add anything. "
+                    "Choose Reinstall on the confirmation screen if you really want to install it again."
+                ),
+            )
+
+        # Name missing dependencies before asking for a password. dnf and
+        # rpm-ostree pull them in automatically; a bare `rpm -Uvh` cannot,
+        # so on rpm-only systems fail here with the exact names.
+        missing = self._missing_dependencies(src_path)
+        use_atomic = bool(distro.is_atomic)
+        use_dnf = bool(distro.has_dnf) and not use_atomic
+        use_zypper = bool(distro.has_zypper) and not use_atomic
+        if missing and not (use_atomic or use_dnf or use_zypper):
+            names = ", ".join(missing)
+            return InstallResult(
+                success=False,
+                message=f"Missing dependencies: {names}",
+                error_details=(
+                    f"Cannot install {info.name}: these dependencies are missing: {names}. "
+                    "Install them first (for example with dnf), then try again."
+                ),
+            )
+
         if progress_callback:
             progress_callback(20, "Requesting administrative privileges...")
 
-        # Determine native installation command
+        # Determine native installation command. Fedora Atomic systems
+        # (Bazzite, Silverblue, ...) have a read-only /usr and their dnf
+        # refuses install commands, so layer with rpm-ostree instead.
         cmd: List[str] = []
-        if distro.has_dnf:
+        timeout = 300
+        if use_atomic:
+            if not distro.has_rpm_ostree and not shutil.which("rpm-ostree"):
+                return InstallResult(
+                    success=False,
+                    message="rpm-ostree was not found.",
+                    error_details=(
+                        "This is a Fedora Atomic system. RPM packages are layered with "
+                        "rpm-ostree, but rpm-ostree is not available."
+                    ),
+                )
+            cmd = ["pkexec", "rpm-ostree", "install", "-y", "--idempotent", str(src_path)]
+            timeout = 1800
+        elif use_dnf:
             cmd = ["pkexec", "dnf", "install", "-y", str(src_path)]
-        elif distro.has_zypper:
+        elif use_zypper:
             cmd = ["pkexec", "zypper", "--non-interactive", "install", str(src_path)]
         elif distro.has_rpm:
             cmd = ["pkexec", "rpm", "-Uvh", str(src_path)]
@@ -141,6 +206,10 @@ class RpmHandler(BaseHandler):
             )
 
         if progress_callback:
+            if missing and use_atomic:
+                progress_callback(30, f"rpm-ostree will also install: {', '.join(missing)}")
+            elif missing and use_dnf:
+                progress_callback(30, f"dnf will also install: {', '.join(missing)}")
             progress_callback(40, f"Installing {info.name} via native package manager...")
 
         try:
@@ -149,7 +218,7 @@ class RpmHandler(BaseHandler):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                timeout=300
+                timeout=timeout
             )
             if proc.returncode != 0:
                 err_msg = proc.stderr.strip() or proc.stdout.strip()
@@ -163,13 +232,28 @@ class RpmHandler(BaseHandler):
             return InstallResult(
                 success=False,
                 message="Installation timed out.",
-                error_details="Package manager operation took longer than 5 minutes."
+                error_details=f"Package manager operation took longer than {timeout // 60} minutes."
             )
         except Exception as e:
             return InstallResult(
                 success=False,
                 message="Failed to invoke package manager.",
                 error_details=str(e)
+            )
+
+        if use_atomic:
+            if progress_callback:
+                progress_callback(100, "Layered. Restart to finish installing.")
+            app_id = f"dropin-rpm-{info.name.lower()}"
+            return InstallResult(
+                success=True,
+                message=(
+                    f"{info.name} v{info.version} was layered with rpm-ostree. "
+                    "Restart your computer to finish installing it."
+                ),
+                app_id=app_id,
+                installed_path="/usr",
+                launch_command=info.name
             )
 
         if progress_callback:
@@ -202,7 +286,10 @@ class RpmHandler(BaseHandler):
         if not distro.has_pkexec:
             return False
 
-        if distro.has_dnf:
+        if distro.is_atomic:
+            # Layered packages come off with rpm-ostree (takes effect on reboot).
+            cmd = ["pkexec", "rpm-ostree", "uninstall", "-y", pkg_name]
+        elif distro.has_dnf:
             cmd = ["pkexec", "dnf", "remove", "-y", pkg_name]
         elif distro.has_zypper:
             cmd = ["pkexec", "zypper", "--non-interactive", "remove", pkg_name]
@@ -215,6 +302,55 @@ class RpmHandler(BaseHandler):
         except Exception as e:
             get_logger().error(f"Failed to uninstall RPM package: {e}")
             return False
+
+    def _query_installed_version(self, pkg_name: str) -> Optional[str]:
+        """Installed VERSION-RELEASE for pkg_name, or None if not installed."""
+        if not shutil.which("rpm"):
+            return None
+        try:
+            proc = subprocess.run(
+                ["rpm", "-q", "--queryformat", "%{VERSION}-%{RELEASE}", pkg_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+            )
+            if proc.returncode == 0:
+                return proc.stdout.strip() or None
+        except Exception:
+            get_logger().debug(
+                "Failed to query installed RPM %s", pkg_name, exc_info=True
+            )
+        return None
+
+    def _missing_dependencies(self, src_path: Path) -> List[str]:
+        """Requirements of this RPM that nothing on the system provides.
+
+        Uses a test transaction only — nothing is installed.
+        """
+        if not shutil.which("rpm"):
+            return []
+        try:
+            proc = subprocess.run(
+                ["rpm", "-U", "--test", str(src_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+        except Exception:
+            get_logger().debug(
+                "RPM dependency test failed for %s", src_path, exc_info=True
+            )
+            return []
+        missing: List[str] = []
+        for line in (proc.stderr or "").splitlines() + (proc.stdout or "").splitlines():
+            line = line.strip()
+            if " is needed by " in line:
+                req = line.split(" is needed by ")[0].strip()
+                if req and req not in missing:
+                    missing.append(req)
+        return missing
 
     def _verify_rpm_installed(self, pkg_name: str) -> bool:
         if shutil.which("rpm"):

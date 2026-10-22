@@ -46,6 +46,8 @@ class DistributionInfo:
     has_pacman: bool = False
     has_flatpak: bool = False
     has_pkexec: bool = False
+    is_atomic: bool = False
+    has_rpm_ostree: bool = False
 
     @property
     def is_debian_family(self) -> bool:

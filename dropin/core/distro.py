@@ -32,6 +32,32 @@ def _read_os_release() -> Dict[str, str]:
     return data
 
 
+# os-release IDs of well-known rpm-ostree / Atomic desktops.
+_ATOMIC_IDS = {"bazzite", "bluefin", "aurora", "silverblue", "kinoite"}
+
+
+def _detect_atomic(distro_id: str = "", id_like: Optional[List[str]] = None) -> bool:
+    """True on rpm-ostree based systems (Bazzite, Silverblue, Kinoite, …).
+
+    There is no single marker, so check several: the ostree boot flag,
+    the /ostree deployment tree plus kernel cmdline, and known Atomic
+    os-release IDs.
+    """
+    family = [distro_id.lower()] + [x.lower() for x in (id_like or [])]
+    if any(x in _ATOMIC_IDS for x in family):
+        return True
+    if os.path.exists("/run/ostree-booted"):
+        return True
+    if os.path.isdir("/ostree"):
+        try:
+            with open("/proc/cmdline", "r", encoding="utf-8", errors="ignore") as f:
+                if "ostree=" in f.read():
+                    return True
+        except OSError:
+            pass
+    return False
+
+
 def detect_architecture() -> str:
     """Return normalized system CPU architecture."""
     arch = platform.machine().lower()
@@ -72,6 +98,8 @@ def detect_distribution() -> DistributionInfo:
         has_pacman=shutil.which("pacman") is not None,
         has_flatpak=shutil.which("flatpak") is not None,
         has_pkexec=shutil.which("pkexec") is not None,
+        is_atomic=_detect_atomic(distro_id, id_like),
+        has_rpm_ostree=shutil.which("rpm-ostree") is not None,
     )
 
 

@@ -320,11 +320,41 @@ class ConfirmationView(QWidget):
             self.warning_banner.show()
             self.install_btn.setEnabled(False)
             self.install_btn.setText("Incompatible")
+            return
+
+        notes = []
+        meta = info.extra_metadata or {}
+        already_installed = bool(meta.get("already_installed"))
+        if already_installed:
+            installed_version = meta.get("installed_version") or info.version
+            notes.append(
+                f"{info.name} v{installed_version} is already installed. "
+                "Installing again will not add a second copy."
+            )
+        if meta.get("atomic_system"):
+            notes.append(
+                "This is a Fedora Atomic system, so this package will be layered "
+                "with rpm-ostree and only works after a restart."
+            )
+        missing_deps = meta.get("missing_dependencies") or []
+        if missing_deps:
+            resolver = "rpm-ostree" if meta.get("atomic_system") else "The package manager"
+            notes.append(
+                f"{resolver} will also install these missing dependencies: "
+                + ", ".join(str(d) for d in missing_deps)
+            )
+
+        if notes:
+            self.warning_banner.setText("⚠️  " + "\n".join(notes))
+            self.warning_banner.show()
         else:
             self.warning_banner.hide()
-            self.install_btn.setEnabled(True)
-            self.install_btn.setText("Install")
+        self.install_btn.setEnabled(True)
+        self.install_btn.setText("Reinstall" if already_installed else "Install")
 
     def _on_install_clicked(self):
         if self.info and self.info.compatibility_ok:
+            if (self.info.extra_metadata or {}).get("already_installed"):
+                # Explicit consent from the Reinstall button.
+                self.info.extra_metadata["reinstall_confirmed"] = True
             self.confirmed.emit(self.info)

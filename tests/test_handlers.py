@@ -7,14 +7,39 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from dropin.core.models import PackageFormat
+from dropin.core.models import AppPackageInfo, DistributionInfo, PackageFormat
 from dropin.handlers.appimage import AppImageHandler
 from dropin.handlers.deb import DebHandler
 from dropin.handlers.rpm import RpmHandler
 from dropin.handlers.flatpak import FlatpakHandler
 from dropin.handlers.archive import ArchiveHandler
 from dropin.handlers import detect_and_inspect
+
+
+def _distro(**overrides) -> DistributionInfo:
+    base = dict(
+        id="fedora",
+        name="Fedora Linux",
+        version="44",
+        id_like=[],
+        arch="x86_64",
+        has_dnf=True,
+        has_rpm=True,
+        has_pkexec=True,
+        is_atomic=False,
+        has_rpm_ostree=False,
+    )
+    base.update(overrides)
+    return DistributionInfo(**base)
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 class TestHandlers(unittest.TestCase):
@@ -125,6 +150,115 @@ class TestHandlers(unittest.TestCase):
         self.assertEqual(info.format, PackageFormat.ARCHIVE)
         self.assertFalse(info.compatibility_ok)
         self.assertIn("source code", info.compatibility_reason.lower())
+
+    def _rpm_info(self, work_dir: Path, **meta_overrides) -> AppPackageInfo:
+        src = work_dir / "chatgpt.rpm"
+        src.write_bytes(b"\xed\xab\xee\xdb")
+        meta = {"already_installed": False}
+        meta.update(meta_overrides)
+        return AppPackageInfo(
+            name="chatgpt",
+            version="26.0-1",
+            format=PackageFormat.RPM,
+            architecture="x86_64",
+            file_path=str(src),
+            extra_metadata=meta,
+        )
+
+    def test_rpm_atomic_install_uses_rpm_ostree_not_dnf(self):
+        handler = RpmHandler()
+        info = self._rpm_info(self.work_dir)
+        atomic = _distro(
+            id="bazzite", name="Bazzite", is_atomic=True, has_rpm_ostree=True
+        )
+        with mock.patch(
+            "dropin.handlers.rpm.get_current_distribution", return_value=atomic
+        ), mock.patch.object(
+            RpmHandler, "_query_installed_version", return_value=None
+        ), mock.patch.object(
+            RpmHandler,
+            "_missing_dependencies",
+            return_value=["(python3-libdnf5 if libdnf5)"],
+        ), mock.patch(
+            "dropin.handlers.rpm.subprocess.run", return_value=_FakeProc(0)
+        ) as run:
+            result = handler.install(info)
+
+        self.assertTrue(result.success, result.error_details)
+        cmd = run.call_args[0][0]
+        self.assertIn("rpm-ostree", cmd)
+        self.assertNotIn("dnf", cmd)
+        self.assertIn("Restart", result.message)
+
+    def test_rpm_refuses_duplicate_install(self):
+        handler = RpmHandler()
+        info = self._rpm_info(self.work_dir)
+        with mock.patch(
+            "dropin.handlers.rpm.get_current_distribution", return_value=_distro()
+        ), mock.patch.object(
+            RpmHandler, "_query_installed_version", return_value="26.0-1"
+        ), mock.patch(
+            "dropin.handlers.rpm.subprocess.run"
+        ) as run:
+            result = handler.install(info)
+
+        self.assertFalse(result.success)
+        self.assertIn("already installed", result.message)
+        run.assert_not_called()
+
+    def test_rpm_missing_dep_named_on_rpm_only_system(self):
+        handler = RpmHandler()
+        info = self._rpm_info(self.work_dir)
+        rpm_only = _distro(has_dnf=False)
+        with mock.patch(
+            "dropin.handlers.rpm.get_current_distribution", return_value=rpm_only
+        ), mock.patch.object(
+            RpmHandler, "_query_installed_version", return_value=None
+        ), mock.patch.object(
+            RpmHandler,
+            "_missing_dependencies",
+            return_value=["(python3-libdnf5 if libdnf5)"],
+        ), mock.patch(
+            "dropin.handlers.rpm.subprocess.run"
+        ) as run:
+            result = handler.install(info)
+
+        self.assertFalse(result.success)
+        self.assertIn("python3-libdnf5", result.message)
+        self.assertIn("python3-libdnf5", result.error_details or "")
+        run.assert_not_called()
+
+    def test_rpm_inspect_marks_atomic_and_already_installed(self):
+        handler = RpmHandler()
+        src = self.work_dir / "chatgpt-26.0-1.x86_64.rpm"
+        src.write_bytes(b"\xed\xab\xee\xdb")
+        atomic = _distro(
+            id="bazzite", name="Bazzite", is_atomic=True, has_rpm_ostree=True
+        )
+        meta = {
+            "NAME": "chatgpt",
+            "VERSION": "26.0",
+            "RELEASE": "1",
+            "ARCH": "x86_64",
+            "SUMMARY": "ChatGPT",
+            "URL": "",
+            "VENDOR": "OpenAI",
+        }
+        with mock.patch(
+            "dropin.handlers.rpm.get_current_distribution", return_value=atomic
+        ), mock.patch.object(
+            RpmHandler, "_query_rpm_metadata", return_value=meta
+        ), mock.patch.object(
+            RpmHandler, "_query_installed_version", return_value="26.0-1"
+        ), mock.patch.object(
+            RpmHandler, "_missing_dependencies", return_value=[]
+        ):
+            info = handler.inspect(src)
+
+        self.assertTrue(info.compatibility_ok, info.compatibility_reason)
+        self.assertTrue(info.extra_metadata["already_installed"])
+        self.assertTrue(info.extra_metadata["atomic_system"])
+        self.assertIn("rpm-ostree", info.target_destination)
 
     def test_archive_prefers_studio_sh_over_format_sh(self):
         handler = ArchiveHandler()
