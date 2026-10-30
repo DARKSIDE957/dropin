@@ -386,13 +386,13 @@ def get_stylesheet(dark: bool | None = None, palette: QPalette | None = None) ->
             background-color: {c['danger_hover']};
         }}
         QPushButton#headerBtn {{
-            padding: 5px 10px;
-            font-size: 11px;
+            padding: 5px 12px;
+            font-size: 12px;
         }}
         QPushButton#iconBtn {{
             padding: 0px;
-            min-width: 34px;
-            min-height: 34px;
+            min-width: 36px;
+            min-height: 36px;
             border-radius: 8px;
             background-color: transparent;
             border: 1px solid transparent;
@@ -405,8 +405,8 @@ def get_stylesheet(dark: bool | None = None, palette: QPalette | None = None) ->
             background-color: {c['pressed']};
         }}
         QPushButton#compactBtn {{
-            padding: 4px 10px;
-            font-size: 11px;
+            padding: 5px 12px;
+            font-size: 12px;
         }}
 
         QLineEdit, QSpinBox {{
@@ -414,8 +414,9 @@ def get_stylesheet(dark: bool | None = None, palette: QPalette | None = None) ->
             color: {c['text']};
             border: 1px solid {c['border']};
             border-radius: 6px;
-            padding: 6px 10px;
-            min-height: 28px;
+            padding: 6px 12px;
+            min-height: 30px;
+            font-size: 13px;
             selection-background-color: {c['highlight']};
             selection-color: {c['highlighted_text']};
         }}

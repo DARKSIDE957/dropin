@@ -292,8 +292,8 @@ class PickInstallFileDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Discover packages")
-        self.setMinimumSize(520, 460)
-        self.resize(560, 520)
+        self.setMinimumSize(640, 500)
+        self.resize(780, 560)
         self._icon_queue: List[str] = []
         self._icons_inflight = 0
         self._icon_generation = 0
@@ -308,8 +308,8 @@ class PickInstallFileDialog(QDialog):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
 
         title = QLabel("Packages ready to install", self)
         title.setObjectName("sectionTitle")
@@ -342,10 +342,11 @@ class PickInstallFileDialog(QDialog):
         layout.addWidget(self.empty_label)
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
+        btn_row.setSpacing(10)
 
         self.refresh_btn = QPushButton("Refresh", self)
         self.refresh_btn.setObjectName("compactBtn")
+        self.refresh_btn.setMinimumHeight(36)
         self.refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.refresh_btn.clicked.connect(self.refresh)
         btn_row.addWidget(self.refresh_btn)
@@ -353,12 +354,14 @@ class PickInstallFileDialog(QDialog):
         btn_row.addStretch()
 
         self.cancel_btn = QPushButton("Cancel", self)
+        self.cancel_btn.setMinimumHeight(36)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self.cancel_btn)
 
         self.install_btn = QPushButton("Install", self)
         self.install_btn.setObjectName("primaryBtn")
+        self.install_btn.setMinimumHeight(36)
         self.install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.install_btn.setEnabled(False)
         self.install_btn.clicked.connect(self._accept_current)

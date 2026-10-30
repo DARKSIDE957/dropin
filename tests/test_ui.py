@@ -40,6 +40,8 @@ class TestUI(unittest.TestCase):
     def test_main_window_instantiation(self):
         window = MainWindow()
         self.assertEqual(window.windowTitle(), "Dropin")
+        self.assertGreaterEqual(window.width(), 800)
+        self.assertGreaterEqual(window.height(), 600)
         self.assertEqual(window.stack.currentIndex(), 0)
         self.assertIsNotNone(window.drop_zone)
         self.assertIsNotNone(window.url_input)

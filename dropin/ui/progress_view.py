@@ -63,7 +63,7 @@ class ProgressView(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(0)
 
         self.card = QFrame(self)
@@ -71,8 +71,8 @@ class ProgressView(QWidget):
         self.card.setGraphicsEffect(None)
         self.card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(12, 10, 12, 10)
-        card_layout.setSpacing(6)
+        card_layout.setContentsMargins(20, 18, 20, 18)
+        card_layout.setSpacing(10)
 
         # Name
         self.name_label = QLabel("Installing…", self.card)
@@ -81,7 +81,7 @@ class ProgressView(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
         self.name_label.setStyleSheet(
-            "font-size: 14px; font-weight: 700; background: transparent;"
+            "font-size: 16px; font-weight: 700; background: transparent;"
         )
         card_layout.addWidget(self.name_label)
 
@@ -116,7 +116,7 @@ class ProgressView(QWidget):
         self.meta_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
-        self.meta_label.setStyleSheet("font-size: 10px; background: transparent;")
+        self.meta_label.setStyleSheet("font-size: 11px; background: transparent;")
         self.meta_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -129,7 +129,7 @@ class ProgressView(QWidget):
         self.status_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
-        self.status_label.setStyleSheet("font-size: 12px; background: transparent;")
+        self.status_label.setStyleSheet("font-size: 13px; background: transparent;")
         card_layout.addWidget(self.status_label)
 
         # Bar + percent
@@ -139,7 +139,7 @@ class ProgressView(QWidget):
         self.progress_bar = QProgressBar(self.card)
         self.progress_bar.setRange(1, 100)
         self.progress_bar.setValue(1)
-        self.progress_bar.setFixedHeight(12)
+        self.progress_bar.setFixedHeight(14)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
@@ -152,7 +152,7 @@ class ProgressView(QWidget):
         )
         self.percent_label.setFixedWidth(40)
         self.percent_label.setStyleSheet(
-            "font-size: 13px; font-weight: 700; background: transparent;"
+            "font-size: 14px; font-weight: 700; background: transparent;"
         )
         pct_row.addWidget(self.percent_label)
         card_layout.addLayout(pct_row)
@@ -163,11 +163,12 @@ class ProgressView(QWidget):
         self.detail_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
-        self.detail_label.setStyleSheet("font-size: 10px; background: transparent;")
+        self.detail_label.setStyleSheet("font-size: 11px; background: transparent;")
         card_layout.addWidget(self.detail_label)
 
         self.cancel_btn = QPushButton("Cancel", self.card)
         self.cancel_btn.setObjectName("compactBtn")
+        self.cancel_btn.setMinimumHeight(36)
         self.cancel_btn.setFixedHeight(28)
         self.cancel_btn.setFixedWidth(88)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)

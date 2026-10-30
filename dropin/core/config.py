@@ -24,6 +24,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "verify_release_digest": True,
     "flatpak_scope": "user",  # "user" or "system"
     "autostart": False,
+    "window_width": 860,
+    "window_height": 640,
 }
 
 
@@ -77,7 +79,16 @@ class ConfigManager:
             temp_file.replace(self.config_file)
             return True
         except Exception:
-            return False
+            try:
+                fallback_dir = Path(f"/tmp/dropin_config_{os.getuid() if hasattr(os, 'getuid') else 'user'}")
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                temp_file = fallback_dir / "settings.json.tmp"
+                with open(temp_file, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, indent=2)
+                temp_file.replace(fallback_dir / "settings.json")
+                return True
+            except Exception:
+                return False
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, DEFAULT_CONFIG.get(key, default))

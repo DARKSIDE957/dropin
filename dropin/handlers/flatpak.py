@@ -160,6 +160,12 @@ class FlatpakHandler(BaseHandler):
         if progress_callback:
             progress_callback(100, "Installation complete.")
 
+        try:
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
+        except Exception:
+            pass
+
         app_id = f"dropin-flatpak-{app_ref.lower().replace('.', '-')}"
         return InstallResult(
             success=True,
@@ -186,7 +192,14 @@ class FlatpakHandler(BaseHandler):
 
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                try:
+                    from dropin.core.desktop import update_desktop_caches
+                    update_desktop_caches()
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception as e:
             get_logger().error(f"Flatpak uninstall failed: {e}")
             return False

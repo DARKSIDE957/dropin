@@ -68,16 +68,18 @@ class AppItemWidget(QWidget):
         self.icon_label.setObjectName("iconSlot")
         self.icon_label.setFixedSize(36, 36)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pix = None
         if self.app.icon_path and Path(self.app.icon_path).is_file():
-            pix = QPixmap(self.app.icon_path)
-            self.icon_label.setPixmap(
-                pix.scaled(
+            loaded = QPixmap(self.app.icon_path)
+            if not loaded.isNull():
+                pix = loaded.scaled(
                     32,
                     32,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
-            )
+        if pix is not None and not pix.isNull():
+            self.icon_label.setPixmap(pix)
         else:
             self.icon_label.setText("📦")
             self.icon_label.setStyleSheet("font-size: 16px; background: transparent;")
@@ -182,7 +184,8 @@ class InstalledAppsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Installed Applications")
-        self.setMinimumSize(520, 420)
+        self.setMinimumSize(640, 500)
+        self.resize(780, 560)
         self.registry = get_registry()
         self.update_manager = UpdateManager()
         self._update_thread = None
@@ -194,19 +197,21 @@ class InstalledAppsDialog(QDialog):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(8)
+        top_row.setSpacing(10)
 
         self.search_input = QLineEdit(self)
         self.search_input.setPlaceholderText("Search installed applications…")
         self.search_input.setClearButtonEnabled(True)
+        self.search_input.setMinimumHeight(38)
         self.search_input.textChanged.connect(self.load_apps)
         top_row.addWidget(self.search_input, 1)
 
         self.check_updates_btn = QPushButton("Check updates", self)
+        self.check_updates_btn.setMinimumHeight(38)
         self.check_updates_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.check_updates_btn.clicked.connect(self._check_updates)
         top_row.addWidget(self.check_updates_btn)

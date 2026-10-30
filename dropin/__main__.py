@@ -37,7 +37,7 @@ def main():
     QApplication.setApplicationVersion(__version__)
     QApplication.setOrganizationDomain("dropin.io")
     QApplication.setOrganizationName("Dropin")
-    QApplication.setDesktopFileName(f"{__app_id__}.desktop")
+    QApplication.setDesktopFileName(__app_id__)
 
     app = QApplication(sys.argv)
     apply_system_theme(app)

@@ -119,19 +119,19 @@ class DropZone(QFrame):
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.setSpacing(10)
-        layout.setContentsMargins(20, 24, 20, 24)
+        layout.setSpacing(14)
+        layout.setContentsMargins(28, 36, 28, 36)
 
         self.icon_label = QLabel(self)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_label.setStyleSheet("background: transparent;")
-        self.icon_label.setPixmap(icon_for("download", size=96).pixmap(QSize(40, 40)))
+        self.icon_label.setPixmap(icon_for("download", size=96).pixmap(QSize(56, 56)))
         layout.addWidget(self.icon_label)
 
         self.primary_label = QLabel("Drop an application file here", self)
         self.primary_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.primary_label.setStyleSheet(
-            "font-size: 15px; font-weight: 700; background: transparent;"
+            "font-size: 18px; font-weight: 700; background: transparent;"
         )
         layout.addWidget(self.primary_label)
 
@@ -141,12 +141,14 @@ class DropZone(QFrame):
         )
         self.sub_label.setObjectName("mutedLabel")
         self.sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sub_label.setStyleSheet("font-size: 13px; background: transparent;")
         self.sub_label.setWordWrap(True)
         layout.addWidget(self.sub_label)
 
         self.browse_btn = QPushButton("Browse files…", self)
         self.browse_btn.setObjectName("compactBtn")
-        self.browse_btn.setFixedWidth(140)
+        self.browse_btn.setFixedWidth(160)
+        self.browse_btn.setMinimumHeight(36)
         self.browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.browse_btn.clicked.connect(self._on_browse_clicked)
         layout.addWidget(self.browse_btn, alignment=Qt.AlignmentFlag.AlignCenter)

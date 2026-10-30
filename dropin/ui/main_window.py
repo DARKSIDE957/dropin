@@ -4,6 +4,8 @@ Main Window for Dropin — Universal Linux Application Installer & Update Manage
 
 import os
 import subprocess
+import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -56,12 +58,18 @@ class InstallWorker(QObject):
         self.package_info = package_info
         self.dest_dir = dest_dir
 
+    def _paced_progress(self, pct: int, msg: str):
+        self.progress.emit(pct, msg)
+        # Subtle human-perceptible pacing (~50ms) so instant local operations
+        # provide clear visual confirmation of each phase.
+        time.sleep(0.05)
+
     def run(self):
         try:
             result = self.handler.install(
                 self.package_info,
                 dest_dir=self.dest_dir,
-                progress_callback=lambda pct, msg: self.progress.emit(pct, msg)
+                progress_callback=self._paced_progress,
             )
             self.finished.emit(result)
         except Exception as e:
@@ -157,8 +165,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Dropin")
-        self.resize(480, 410)
-        self.setMinimumSize(440, 370)
+        cfg = get_config()
+        saved_w = int(cfg.get("window_width", 860))
+        saved_h = int(cfg.get("window_height", 640))
+        self.resize(max(860, saved_w), max(640, saved_h))
+        self.setMinimumSize(640, 480)
 
         self.registry = get_registry()
         self.url_resolver = UrlResolver()
@@ -237,8 +248,8 @@ class MainWindow(QMainWindow):
         header_frame = QFrame(self)
         header_frame.setObjectName("headerFrame")
         layout = QHBoxLayout(header_frame)
-        layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(10)
 
         layout.addStretch()
 
@@ -250,6 +261,7 @@ class MainWindow(QMainWindow):
         )
         self.pick_file_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pick_file_btn.setAccessibleName("Discover packages to install")
+        self.pick_file_btn.setMinimumHeight(34)
         apply_icon(self.pick_file_btn, "folder", size=16, clear_text=False)
         self.pick_file_btn.clicked.connect(self._open_pick_file_dialog)
         layout.addWidget(self.pick_file_btn)
@@ -258,7 +270,7 @@ class MainWindow(QMainWindow):
         self.installed_btn = QPushButton(self)
         self.installed_btn.setObjectName("iconBtn")
         self.installed_btn.setToolTip("Installed apps")
-        self.installed_btn.setFixedSize(34, 34)
+        self.installed_btn.setFixedSize(36, 36)
         self.installed_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.installed_btn.setAccessibleName("Installed apps")
         apply_icon(self.installed_btn, "apps", size=18)
@@ -269,7 +281,7 @@ class MainWindow(QMainWindow):
         self.settings_btn = QPushButton(self)
         self.settings_btn.setObjectName("iconBtn")
         self.settings_btn.setToolTip("Settings")
-        self.settings_btn.setFixedSize(34, 34)
+        self.settings_btn.setFixedSize(36, 36)
         self.settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_btn.setAccessibleName("Settings")
         apply_icon(self.settings_btn, "settings", size=18)
@@ -286,8 +298,8 @@ class MainWindow(QMainWindow):
         page.dropEvent = self._landing_drop  # type: ignore[method-assign]
 
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(14)
 
         # Drag & Drop Zone
         self.drop_zone = DropZone(page)
@@ -300,17 +312,19 @@ class MainWindow(QMainWindow):
         url_frame = QFrame(page)
         url_layout = QHBoxLayout(url_frame)
         url_layout.setContentsMargins(0, 0, 0, 0)
-        url_layout.setSpacing(8)
+        url_layout.setSpacing(10)
 
         self.url_input = QLineEdit(page)
         self.url_input.setPlaceholderText("Paste a download or GitHub release URL...")
         self.url_input.setClearButtonEnabled(True)
+        self.url_input.setMinimumHeight(42)
         self.url_input.returnPressed.connect(self._handle_url_input)
         url_layout.addWidget(self.url_input, 1)
 
         self.install_url_btn = QPushButton("Install", page)
         self.install_url_btn.setObjectName("primaryBtn")
-        self.install_url_btn.setFixedWidth(88)
+        self.install_url_btn.setMinimumHeight(42)
+        self.install_url_btn.setFixedWidth(110)
         self.install_url_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.install_url_btn.clicked.connect(self._handle_url_input)
         url_layout.addWidget(self.install_url_btn)
@@ -393,6 +407,13 @@ class MainWindow(QMainWindow):
                 self._park_thread(self._install_thread)
                 self._install_thread = None
                 self._install_worker = None
+        try:
+            if not self.isMaximized():
+                cfg = get_config()
+                cfg.set("window_width", self.width())
+                cfg.set("window_height", self.height())
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def _open_pick_file_dialog(self):

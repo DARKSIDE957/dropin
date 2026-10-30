@@ -320,7 +320,16 @@ class AppImageHandler(BaseHandler):
                         if proc_e.returncode == 0:
                             meta.update(self._parse_desktop_file_text(proc_e.stdout))
 
-                    # Extract icon bytes
+                    def _is_valid_image(data: bytes) -> bool:
+                        if len(data) < 64:
+                            return False
+                        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+                            return True
+                        if b"<svg" in data[:300].lower():
+                            return True
+                        return False
+
+                    valid_icon = False
                     if icon_entry or ".DirIcon" in proc.stdout:
                         icon_target = icon_entry if icon_entry else ".DirIcon"
                         proc_i = subprocess.run(
@@ -329,8 +338,20 @@ class AppImageHandler(BaseHandler):
                             stderr=subprocess.PIPE,
                             timeout=5
                         )
-                        if proc_i.returncode == 0 and len(proc_i.stdout) > 0:
+                        if proc_i.returncode == 0 and _is_valid_image(proc_i.stdout):
                             meta["icon_bytes"] = proc_i.stdout
+                            valid_icon = True
+
+                    # If .DirIcon was a symlink or invalid image, try other icon entries in the archive
+                    if not valid_icon and icon_entry:
+                        proc_fallback = subprocess.run(
+                            ["7z", "e", "-so", str(file_path), icon_entry],
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                            timeout=5
+                        )
+                        if proc_fallback.returncode == 0 and _is_valid_image(proc_fallback.stdout):
+                            meta["icon_bytes"] = proc_fallback.stdout
             except Exception as e:
                 get_logger().debug(f"AppImage 7z extraction skipped: {e}")
 
@@ -360,7 +381,7 @@ class AppImageHandler(BaseHandler):
         icons_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"
         icons_dir.mkdir(parents=True, exist_ok=True)
 
-        if icon_bytes:
+        if icon_bytes and len(icon_bytes) >= 64 and (icon_bytes.startswith(b"\x89PNG") or b"<svg" in icon_bytes[:300].lower()):
             # Detect whether svg or png
             is_svg = b"<svg" in icon_bytes[:200].lower()
             ext = ".svg" if is_svg else ".png"
@@ -427,14 +448,5 @@ class AppImageHandler(BaseHandler):
             return None
 
     def _update_desktop_db(self) -> None:
-        if shutil.which("update-desktop-database"):
-            try:
-                launchers_dir = str(Path.home() / ".local" / "share" / "applications")
-                subprocess.run(
-                    ["update-desktop-database", launchers_dir],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5
-                )
-            except Exception:
-                pass
+        from dropin.core.desktop import update_desktop_caches
+        update_desktop_caches()

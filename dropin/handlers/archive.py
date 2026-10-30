@@ -359,6 +359,10 @@ class ArchiveHandler(BaseHandler):
                         "Failed to remove archive launcher %s", launcher, exc_info=True
                     )
 
+        if removed_any:
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
+
         still_there = [str(t) for t in targets if t.exists()]
         if still_there:
             errors.append(f"Portable app still on disk: {', '.join(still_there)}")
@@ -540,6 +544,8 @@ class ArchiveHandler(BaseHandler):
         try:
             launcher_path.write_text(content, encoding="utf-8")
             secure_file_permissions(str(launcher_path), is_executable=True)
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
             return launcher_path
         except Exception:
             get_logger().warning(

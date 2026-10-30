@@ -151,7 +151,7 @@ EOF
 chmod +x "$BIN_DIR/dropin"
 
 echo -e "${BLUE}4/4  Registering app menu entry…${NC}"
-cp "$SCRIPT_DIR/io.dropin.Dropin.desktop" "$DESKTOP_DIR/$APP_ID.desktop"
+sed "s|^Exec=dropin|Exec=$BIN_DIR/dropin|" "$SCRIPT_DIR/io.dropin.Dropin.desktop" > "$DESKTOP_DIR/$APP_ID.desktop"
 chmod 644 "$DESKTOP_DIR/$APP_ID.desktop"
 cp "$SCRIPT_DIR/dropin/assets/io.dropin.Dropin.svg" "$ICON_DIR/$APP_ID.svg"
 chmod 644 "$ICON_DIR/$APP_ID.svg"
@@ -160,6 +160,11 @@ chmod 644 "$METAINFO_DIR/$APP_ID.metainfo.xml"
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+fi
+if command -v kbuildsycoca6 >/dev/null 2>&1; then
+    kbuildsycoca6 --noincremental 2>/dev/null || true
+elif command -v kbuildsycoca5 >/dev/null 2>&1; then
+    kbuildsycoca5 --noincremental 2>/dev/null || true
 fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     gtk-update-icon-cache -f -t "$PREFIX/share/icons/hicolor" 2>/dev/null || true

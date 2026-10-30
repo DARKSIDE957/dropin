@@ -20,7 +20,12 @@ def get_data_dir() -> Path:
         path = Path(xdg_data_home) / "dropin"
     else:
         path = Path.home() / ".local" / "share" / "dropin"
-    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        fallback = Path(f"/tmp/dropin_data_{os.getuid() if hasattr(os, 'getuid') else 'user'}")
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
     return path
 
 

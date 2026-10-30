@@ -21,15 +21,16 @@ class AuditDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Security and Audit Logs")
-        self.resize(640, 400)
+        self.setMinimumSize(640, 440)
+        self.resize(740, 500)
         self.registry = get_registry()
         self._init_ui()
         self.load_logs()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(12)
 
         header = QLabel("Security and installation history", self)
         header.setStyleSheet("font-size: 14px; font-weight: 700;")

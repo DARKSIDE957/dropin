@@ -204,6 +204,12 @@ class DebHandler(BaseHandler):
         if progress_callback:
             progress_callback(100, "Installation complete.")
 
+        try:
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
+        except Exception:
+            pass
+
         app_id = f"dropin-deb-{info.name.lower()}"
         return InstallResult(
             success=True,
@@ -222,7 +228,14 @@ class DebHandler(BaseHandler):
         cmd = ["pkexec", "apt-get", "remove", "-y", pkg_name] if distro.has_apt else ["pkexec", "dpkg", "-r", pkg_name]
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                try:
+                    from dropin.core.desktop import update_desktop_caches
+                    update_desktop_caches()
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception as e:
             get_logger().error(f"Failed to uninstall DEB package: {e}")
             return False

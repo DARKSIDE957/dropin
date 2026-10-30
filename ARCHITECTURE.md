@@ -46,6 +46,7 @@ Dropin is architected as a modular, decoupled Linux desktop utility separating t
    - `config`: XDG-compliant persistent configuration (`~/.config/dropin/settings.json`).
    - `registry`: SQLite storage (`~/.local/share/dropin/dropin.db`) recording installed applications and audit logs.
    - `security`: Network and filesystem validation, SSRF filtering, and path traversal detection.
+   - `desktop`: Desktop integration cache refresh (update-desktop-database, kbuildsycoca6/5, gtk-update-icon-cache).
    - `logger`: File and console logging.
 
 2. **`dropin.handlers`**:

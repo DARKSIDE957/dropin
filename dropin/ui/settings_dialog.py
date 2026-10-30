@@ -37,8 +37,8 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumSize(560, 420)
-        self.resize(600, 460)
+        self.setMinimumSize(640, 480)
+        self.resize(720, 540)
         self.cfg = get_config()
         self._init_ui()
         self.load_values()

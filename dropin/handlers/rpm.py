@@ -253,7 +253,7 @@ class RpmHandler(BaseHandler):
                 ),
                 app_id=app_id,
                 installed_path="/usr",
-                launch_command=info.name
+                launch_command=None
             )
 
         if progress_callback:
@@ -270,6 +270,12 @@ class RpmHandler(BaseHandler):
 
         if progress_callback:
             progress_callback(100, "Installation complete.")
+
+        try:
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
+        except Exception:
+            pass
 
         app_id = f"dropin-rpm-{info.name.lower()}"
         return InstallResult(
@@ -298,7 +304,14 @@ class RpmHandler(BaseHandler):
 
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=180)
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                try:
+                    from dropin.core.desktop import update_desktop_caches
+                    update_desktop_caches()
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception as e:
             get_logger().error(f"Failed to uninstall RPM package: {e}")
             return False

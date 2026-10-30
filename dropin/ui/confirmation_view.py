@@ -37,21 +37,21 @@ class ConfirmationView(QWidget):
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(14, 12, 14, 12)
-        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(18, 16, 18, 16)
+        main_layout.setSpacing(12)
 
         self.card = QFrame(self)
         self.card.setObjectName("cardFrame")
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(16, 14, 16, 14)
+        card_layout.setContentsMargins(20, 18, 20, 18)
         card_layout.setSpacing(12)
 
         top_row = QHBoxLayout()
-        top_row.setSpacing(12)
+        top_row.setSpacing(14)
 
         self.icon_label = QLabel(self)
         self.icon_label.setObjectName("iconSlot")
-        self.icon_label.setFixedSize(52, 52)
+        self.icon_label.setFixedSize(58, 58)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         top_row.addWidget(self.icon_label)
 
@@ -60,7 +60,7 @@ class ConfirmationView(QWidget):
 
         self.name_label = QLabel("Application Name", self)
         self.name_label.setStyleSheet(
-            "font-size: 16px; font-weight: 700; background: transparent;"
+            "font-size: 18px; font-weight: 700; background: transparent;"
         )
         self.name_label.setWordWrap(True)
         title_box.addWidget(self.name_label)
@@ -121,6 +121,7 @@ class ConfirmationView(QWidget):
             "Choose folder for this install (optional)", self
         )
         self.choose_dest_btn.setObjectName("compactBtn")
+        self.choose_dest_btn.setMinimumHeight(32)
         self.choose_dest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.choose_dest_btn.setToolTip(
             "Optional. Pick a folder for this install only. "
@@ -131,6 +132,7 @@ class ConfirmationView(QWidget):
 
         self.clear_dest_btn = QPushButton("Use Settings location", self)
         self.clear_dest_btn.setObjectName("compactBtn")
+        self.clear_dest_btn.setMinimumHeight(32)
         self.clear_dest_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear_dest_btn.setToolTip(
             "Clear the folder override and use the location from Settings."
@@ -145,15 +147,17 @@ class ConfirmationView(QWidget):
         main_layout.addWidget(self.card, 1)
 
         btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
+        btn_layout.setSpacing(10)
 
         self.cancel_btn = QPushButton("Cancel", self)
+        self.cancel_btn.setMinimumHeight(38)
         self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.cancel_btn.clicked.connect(self.cancelled.emit)
         btn_layout.addWidget(self.cancel_btn)
 
         self.install_btn = QPushButton("Install", self)
         self.install_btn.setObjectName("primaryBtn")
+        self.install_btn.setMinimumHeight(38)
         self.install_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.install_btn.clicked.connect(self._on_install_clicked)
         btn_layout.addWidget(self.install_btn)

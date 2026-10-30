@@ -29,30 +29,31 @@ class ResultView(QWidget):
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.card = QFrame(self)
         self.card.setObjectName("cardFrame")
         card_layout = QVBoxLayout(self.card)
-        card_layout.setContentsMargins(24, 24, 24, 24)
-        card_layout.setSpacing(12)
+        card_layout.setContentsMargins(28, 28, 28, 28)
+        card_layout.setSpacing(14)
         card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.icon_label = QLabel("✅", self)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.icon_label.setStyleSheet("font-size: 42px; background: transparent;")
+        self.icon_label.setStyleSheet("font-size: 50px; background: transparent;")
         card_layout.addWidget(self.icon_label)
 
         self.title_label = QLabel("Installation Complete", self)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title_label.setStyleSheet("font-size: 16px; font-weight: 700; background: transparent;")
+        self.title_label.setStyleSheet("font-size: 19px; font-weight: 700; background: transparent;")
         card_layout.addWidget(self.title_label)
 
         self.message_label = QLabel("The application has been successfully installed.", self)
         self.message_label.setObjectName("subtitleLabel")
         self.message_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message_label.setStyleSheet("font-size: 13px; background: transparent;")
         self.message_label.setWordWrap(True)
         card_layout.addWidget(self.message_label)
 
@@ -61,13 +62,14 @@ class ResultView(QWidget):
         self.details_btn.setCheckable(True)
         self.details_btn.setChecked(False)
         self.details_btn.setFixedWidth(190)
+        self.details_btn.setMinimumHeight(32)
         self.details_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.details_btn.clicked.connect(self._toggle_details)
         card_layout.addWidget(self.details_btn, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.details_text = QTextEdit(self)
         self.details_text.setReadOnly(True)
-        self.details_text.setMaximumHeight(90)
+        self.details_text.setMaximumHeight(100)
         self.details_text.hide()
         card_layout.addWidget(self.details_text)
 
@@ -75,17 +77,20 @@ class ResultView(QWidget):
         self.btn_row.setSpacing(10)
 
         self.back_btn = QPushButton("Back", self)
+        self.back_btn.setMinimumHeight(38)
         self.back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.back_btn.clicked.connect(self.back_requested.emit)
         self.btn_row.addWidget(self.back_btn)
 
         self.launch_btn = QPushButton("Launch", self)
         self.launch_btn.setObjectName("primaryBtn")
+        self.launch_btn.setMinimumHeight(38)
         self.launch_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.launch_btn.clicked.connect(self.launch_requested.emit)
         self.btn_row.addWidget(self.launch_btn)
 
         self.done_btn = QPushButton("Done", self)
+        self.done_btn.setMinimumHeight(38)
         self.done_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.done_btn.clicked.connect(self.done_requested.emit)
         self.btn_row.addWidget(self.done_btn)
