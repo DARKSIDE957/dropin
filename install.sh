@@ -138,6 +138,9 @@ echo -e "${BLUE}3/4  Copying Dropin…${NC}"
 mkdir -p "$BIN_DIR" "$APP_LIB_DIR" "$DESKTOP_DIR" "$ICON_DIR" "$METAINFO_DIR"
 rm -rf "$APP_LIB_DIR/dropin"
 cp -r "$SCRIPT_DIR/dropin" "$APP_LIB_DIR/"
+if command -v git >/dev/null 2>&1 && [ -d "$SCRIPT_DIR/.git" ]; then
+    git -C "$SCRIPT_DIR" rev-parse HEAD > "$APP_LIB_DIR/commit.txt" 2>/dev/null || true
+fi
 
 cat << 'EOF' > "$BIN_DIR/dropin"
 #!/usr/bin/env bash

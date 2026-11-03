@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Callable, Tuple
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -25,9 +25,15 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSizePolicy,
+    QFrame,
 )
 
 from dropin.core.config import get_config, DEFAULT_CONFIG
+from dropin.updater.self_updater import (
+    SelfUpdater,
+    CheckDropinUpdateWorker,
+    PerformDropinUpdateWorker,
+)
 from dropin.ui.audit_dialog import AuditDialog
 from dropin.ui.theme import apply_system_theme
 from dropin.ui.animations import fade_widget
@@ -40,6 +46,10 @@ class SettingsDialog(QDialog):
         self.setMinimumSize(640, 480)
         self.resize(720, 540)
         self.cfg = get_config()
+        self._check_thread = None
+        self._check_worker = None
+        self._update_thread = None
+        self._update_worker = None
         self._init_ui()
         self.load_values()
         fade_widget(self, 160)
@@ -235,6 +245,61 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True)
         layout.addWidget(note)
 
+        # --- DROPIN APPLICATION SELF-UPDATE SECTION ---
+        layout.addWidget(self._make_section_label("Dropin Application Update", page))
+
+        dropin_card = QFrame(page)
+        dropin_card.setObjectName("dropinUpdateCard")
+        dropin_card.setStyleSheet("""
+            QFrame#dropinUpdateCard {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 8px;
+            }
+        """)
+        card_layout = QVBoxLayout(dropin_card)
+        card_layout.setContentsMargins(14, 14, 14, 14)
+        card_layout.setSpacing(10)
+
+        info = SelfUpdater.get_info()
+        ver_text = f"Dropin v{info['version']}"
+        if info.get("commit"):
+            ver_text += f" (commit {info['commit']})"
+
+        self.dropin_version_label = QLabel(ver_text, dropin_card)
+        self.dropin_version_label.setStyleSheet("font-weight: 600; font-size: 13px; background: transparent;")
+        card_layout.addWidget(self.dropin_version_label)
+
+        self.dropin_update_status = QLabel(
+            "Check GitHub for the latest releases, improvements, and fixes for Dropin.",
+            dropin_card,
+        )
+        self.dropin_update_status.setObjectName("mutedLabel")
+        self.dropin_update_status.setWordWrap(True)
+        self.dropin_update_status.setStyleSheet("background: transparent; font-size: 12px;")
+        card_layout.addWidget(self.dropin_update_status)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+
+        self.check_dropin_btn = QPushButton("Check for Dropin updates", dropin_card)
+        self.check_dropin_btn.setMinimumHeight(36)
+        self.check_dropin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.check_dropin_btn.clicked.connect(self._check_dropin_update)
+        action_row.addWidget(self.check_dropin_btn)
+
+        self.update_dropin_btn = QPushButton("Update Dropin", dropin_card)
+        self.update_dropin_btn.setObjectName("primaryBtn")
+        self.update_dropin_btn.setMinimumHeight(36)
+        self.update_dropin_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_dropin_btn.clicked.connect(self._perform_dropin_update)
+        action_row.addWidget(self.update_dropin_btn)
+
+        action_row.addStretch()
+        card_layout.addLayout(action_row)
+
+        layout.addWidget(dropin_card)
+
         layout.addStretch()
         return page
 
@@ -371,3 +436,101 @@ class SettingsDialog(QDialog):
         self.cfg.set("confirm_installations", self.chk_confirm.isChecked())
         self.cfg.set("max_download_size_mb", self.spin_size.value())
         self.accept()
+
+    def _check_dropin_update(self):
+        self.check_dropin_btn.setEnabled(False)
+        self.check_dropin_btn.setText("Checking GitHub…")
+        self.dropin_update_status.setText("Connecting to GitHub to check for updates…")
+
+        self._check_thread = QThread(self)
+        self._check_worker = CheckDropinUpdateWorker()
+        self._check_worker.moveToThread(self._check_thread)
+
+        self._check_thread.started.connect(self._check_worker.run)
+        self._check_worker.finished.connect(self._on_check_dropin_finished)
+        self._check_worker.error.connect(self._on_check_dropin_error)
+        self._check_thread.start()
+
+    def _on_check_dropin_finished(self, has_update: bool, msg: str, info: dict):
+        self._clean_check_thread()
+        self.check_dropin_btn.setEnabled(True)
+        self.check_dropin_btn.setText("Check for Dropin updates")
+        self.dropin_update_status.setText(msg)
+
+        if has_update:
+            self.update_dropin_btn.setEnabled(True)
+            self.update_dropin_btn.setText("Update Dropin Now")
+        else:
+            self.update_dropin_btn.setText("Update Dropin")
+
+    def _on_check_dropin_error(self, err_msg: str):
+        self._clean_check_thread()
+        self.check_dropin_btn.setEnabled(True)
+        self.check_dropin_btn.setText("Check for Dropin updates")
+        self.dropin_update_status.setText(f"Update check failed: {err_msg}")
+
+    def _perform_dropin_update(self):
+        reply = QMessageBox.question(
+            self,
+            "Update Dropin",
+            "Do you want to update Dropin to the latest version from GitHub now?\n\n"
+            "This will download and install the latest updates. You will be prompted to restart Dropin when complete.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.update_dropin_btn.setEnabled(False)
+        self.update_dropin_btn.setText("Updating Dropin…")
+        self.check_dropin_btn.setEnabled(False)
+        self.dropin_update_status.setText("Starting Dropin update…")
+
+        self._update_thread = QThread(self)
+        self._update_worker = PerformDropinUpdateWorker()
+        self._update_worker.moveToThread(self._update_thread)
+
+        self._update_thread.started.connect(self._update_worker.run)
+        self._update_worker.progress.connect(self._on_update_progress)
+        self._update_worker.finished.connect(self._on_update_dropin_finished)
+        self._update_thread.start()
+
+    def _on_update_progress(self, pct: int, status_msg: str):
+        self.dropin_update_status.setText(f"{status_msg} ({pct}%)")
+
+    def _on_update_dropin_finished(self, success: bool, msg: str):
+        self._clean_update_thread()
+        self.update_dropin_btn.setEnabled(True)
+        self.update_dropin_btn.setText("Update Dropin")
+        self.check_dropin_btn.setEnabled(True)
+
+        if success:
+            self.dropin_update_status.setText(msg)
+            info = SelfUpdater.get_info()
+            ver_text = f"Dropin v{info['version']}"
+            if info.get("commit"):
+                ver_text += f" (commit {info['commit']})"
+            self.dropin_version_label.setText(ver_text)
+            QMessageBox.information(self, "Update Complete", msg)
+        else:
+            self.dropin_update_status.setText(f"Update failed: {msg}")
+            QMessageBox.warning(self, "Update Failed", f"Could not complete Dropin update:\n{msg}")
+
+    def _clean_check_thread(self):
+        if self._check_thread and self._check_thread.isRunning():
+            self._check_thread.quit()
+            self._check_thread.wait()
+        self._check_thread = None
+        self._check_worker = None
+
+    def _clean_update_thread(self):
+        if self._update_thread and self._update_thread.isRunning():
+            self._update_thread.quit()
+            self._update_thread.wait()
+        self._update_thread = None
+        self._update_worker = None
+
+    def closeEvent(self, event):
+        self._clean_check_thread()
+        self._clean_update_thread()
+        super().closeEvent(event)
