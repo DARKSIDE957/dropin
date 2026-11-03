@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from dropin.core.models import AppPackageInfo
+from dropin.core.versions import clean_display_version
 
 
 def _format_size(num_bytes: int) -> str:
@@ -199,7 +200,7 @@ class ProgressView(QWidget):
             return
 
         self.name_label.setText(info.name or "Application")
-        self.version_label.setText(f"v{info.version}" if info.version else "")
+        self.version_label.setText(clean_display_version(info.version) if info.version else "")
         self.version_label.setVisible(bool(info.version))
         self.format_label.setText(info.format.value if info.format else "")
         self.format_label.setVisible(bool(info.format))

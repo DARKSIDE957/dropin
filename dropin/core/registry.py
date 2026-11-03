@@ -80,6 +80,70 @@ class AppRegistry:
             """)
             conn.commit()
 
+        # Automatically repair and synchronize any legacy/stale registry records
+        self.sync_and_repair_installed_apps()
+
+    def sync_and_repair_installed_apps(self) -> int:
+        """Repairs stale or corrupt metadata (e.g. 1.0.0 desktop spec fallback versions, missing update links)."""
+        repaired = 0
+        try:
+            from dropin.handlers.appimage import AppImageHandler
+            from dropin.handlers.archive import ArchiveHandler
+            from dropin.core.versions import normalize_version
+
+            appimage_handler = AppImageHandler()
+            archive_handler = ArchiveHandler()
+
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, name, version, format, file_path, update_type, update_identifier FROM installed_apps")
+                rows = cursor.fetchall()
+                for row in rows:
+                    app_id = row["id"]
+                    name = row["name"]
+                    version = row["version"] or ""
+                    fmt = row["format"] or ""
+                    file_path = row["file_path"] or ""
+                    up_type = row["update_type"] or "none"
+                    up_id = row["update_identifier"] or ""
+
+                    new_version = version
+                    new_up_type = up_type
+                    new_up_id = up_id
+
+                    p = Path(file_path) if file_path else None
+                    if fmt == "AppImage" and p and p.is_file():
+                        info = appimage_handler.inspect(p)
+                        if info.version and info.version != "1.0.0":
+                            new_version = info.version
+                        elif version.endswith("-x86"):
+                            new_version = version[:-4]
+
+                        if (not up_id or up_type == "none") and info.extra_metadata.get("update_identifier"):
+                            new_up_type = info.extra_metadata.get("update_type", "none")
+                            new_up_id = info.extra_metadata.get("update_identifier", "")
+
+                    elif fmt == "Archive" and p and p.is_dir():
+                        detected = archive_handler._detect_version_from_extracted_dir(p)
+                        if detected:
+                            new_version = normalize_version(detected) or detected
+
+                    if version.endswith("-x86"):
+                        new_version = version[:-4]
+
+                    if new_version != version or new_up_type != up_type or new_up_id != up_id:
+                        cursor.execute(
+                            "UPDATE installed_apps SET version = ?, latest_version = ?, update_type = ?, update_identifier = ? WHERE id = ?",
+                            (new_version, new_version, new_up_type, new_up_id, app_id)
+                        )
+                        repaired += 1
+                if repaired > 0:
+                    conn.commit()
+                    get_logger().info(f"Synchronized and repaired {repaired} application registry records.")
+        except Exception as e:
+            get_logger().debug(f"Registry repair skipped or encountered error: {e}")
+        return repaired
+
     def add_app(self, app: InstalledApp) -> bool:
         try:
             with self._get_connection() as conn:

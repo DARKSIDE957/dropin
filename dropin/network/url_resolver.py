@@ -67,7 +67,7 @@ class UrlResolver:
             return ResolvedUrlInfo(
                 target_type=UrlTargetType.GITHUB_RELEASE,
                 url=url_str,
-                suggested_name=info.repo,
+                suggested_name=best_asset.name if best_asset else info.repo,
                 format=best_asset.format if best_asset else PackageFormat.UNKNOWN,
                 github_info=info,
                 assets=info.assets

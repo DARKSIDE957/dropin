@@ -65,9 +65,12 @@ class FlatpakHandler(BaseHandler):
         compat_ok = distro.has_flatpak
         compat_reason = "" if distro.has_flatpak else "Flatpak runtime is not installed on this system. Please install 'flatpak' first."
 
+        real_ver = self._query_flatpak_version(app_id) if compat_ok else None
+        version = real_ver or branch or "1.0.0"
+
         return AppPackageInfo(
             name=title,
-            version=branch,
+            version=version,
             format=PackageFormat.FLATPAK,
             architecture=distro.arch,
             file_path=str(file_path),
@@ -157,6 +160,10 @@ class FlatpakHandler(BaseHandler):
         app_ref = info.extra_metadata.get("Name", info.name)
         launch_cmd = f"flatpak run {app_ref}"
 
+        real_ver = self._query_flatpak_version(app_ref)
+        if real_ver:
+            info.version = real_ver
+
         if progress_callback:
             progress_callback(100, "Installation complete.")
 
@@ -213,15 +220,59 @@ class FlatpakHandler(BaseHandler):
         try:
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=15)
             if proc.returncode == 0 and app_ref in proc.stdout:
+                latest_ver = self._query_flatpak_version(app_ref) or "Updated upstream"
                 return UpdateCheckResult(
                     app_id=app.id,
                     current_version=app.version,
-                    latest_version="Updated upstream",
+                    latest_version=latest_ver,
                     update_available=True,
-                    message="A new Flatpak update is available from the remote."
+                    message=f"A new Flatpak update ({latest_ver}) is available from the remote."
                 )
         except Exception:
             pass
+        return None
+
+    def _query_flatpak_version(self, app_ref: str) -> Optional[str]:
+        if not shutil.which("flatpak") or not app_ref:
+            return None
+
+        # 1. Try local flatpak info
+        try:
+            res = subprocess.run(
+                ["flatpak", "info", app_ref],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if line.strip().startswith("Version:"):
+                        v = line.split(":", 1)[1].strip()
+                        if v:
+                            return v
+        except Exception:
+            pass
+
+        # 2. Try remote-info on flathub
+        for scope_flag in ("--user", "--system"):
+            try:
+                res = subprocess.run(
+                    ["flatpak", "remote-info", scope_flag, "flathub", app_ref],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=8,
+                )
+                if res.returncode == 0:
+                    for line in res.stdout.splitlines():
+                        if line.strip().startswith("Version:"):
+                            v = line.split(":", 1)[1].strip()
+                            if v:
+                                return v
+            except Exception:
+                pass
+
         return None
 
     def _parse_flatpak_ref(self, file_path: Path) -> Dict[str, str]:

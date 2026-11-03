@@ -4,6 +4,7 @@ Implements safe inspection, desktop launcher generation, installation to ~/Appli
 and clean uninstallation.
 """
 
+import json
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from dropin.core.models import (
     UpdateCheckResult,
 )
 from dropin.core.security import secure_file_permissions
+from dropin.core.versions import extract_semantic_version, is_newer_version, normalize_version
 from dropin.handlers.base import BaseHandler
 
 
@@ -69,11 +71,21 @@ class AppImageHandler(BaseHandler):
                 compat_ok = False
                 compat_reason = f"Application architecture ({arch}) does not match your system architecture ({current_arch})."
 
-        # Attempt to extract metadata (.desktop / icon) safely without running the binary
+        # Attempt to extract metadata (.desktop / icon / appstream / electron / update info) safely
         meta = self._extract_appimage_metadata(file_path)
 
-        app_name = meta.get("Name") or self._clean_app_name(file_name)
-        version = meta.get("Version") or self._detect_version_from_name(file_name)
+        app_name = meta.get("Name") or meta.get("package_json_name") or self._clean_app_name(file_name)
+        raw_version = (
+            meta.get("app_version")
+            or meta.get("appstream_version")
+            or meta.get("package_json_version")
+            or meta.get("tauri_version")
+            or self._detect_version_from_name(file_name)
+            or meta.get("desktop_version")
+            or meta.get("desktop_spec_version")
+            or "1.0.0"
+        )
+        version = normalize_version(raw_version) or "1.0.0"
         description = meta.get("Comment") or "Linux AppImage Application"
         icon_bytes = meta.get("icon_bytes")
 
@@ -273,17 +285,37 @@ class AppImageHandler(BaseHandler):
             return name.title()
         return name if name else "AppImage Application"
 
-    def _detect_version_from_name(self, filename: str) -> str:
-        match = re.search(r"[-_vV]?(\d+\.\d+(?:\.\d+)?(?:[-_][a-zA-Z0-9]+)?)", filename)
-        if match:
-            return match.group(1)
-        return "1.0.0"
+    def _detect_version_from_name(self, filename: str) -> Optional[str]:
+        return extract_semantic_version(filename)
 
     def _extract_appimage_metadata(self, file_path: Path) -> Dict[str, Any]:
-        """Attempt safe inspection of AppImage squashfs metadata using available tools (7z/unsquashfs) or binary search."""
+        """Attempt safe inspection of AppImage squashfs metadata using available tools (7z/unsquashfs/readelf) or binary search."""
         meta: Dict[str, Any] = {}
 
-        # Check if 7z can list contents
+        # 1. Check embedded ELF .upd_info section for upstream update target
+        if shutil.which("readelf"):
+            try:
+                re_proc = subprocess.run(
+                    ["readelf", "-p", ".upd_info", str(file_path)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                )
+                if re_proc.returncode == 0:
+                    for rline in re_proc.stdout.splitlines():
+                        if "gh-releases-zsync|" in rline:
+                            payload = rline.split("gh-releases-zsync|", 1)[1].strip()
+                            parts = payload.split("|")
+                            if len(parts) >= 2 and parts[0] and parts[1]:
+                                meta["update_type"] = "github"
+                                meta["update_identifier"] = f"{parts[0]}/{parts[1]}"
+                        elif "zsync|" in rline:
+                            meta["zsync_url"] = rline.split("zsync|", 1)[1].strip()
+            except Exception as e:
+                get_logger().debug(f"AppImage readelf .upd_info check skipped: {e}")
+
+        # 2. Check if 7z can list squashfs contents
         has_7z = shutil.which("7z") is not None
         if has_7z:
             try:
@@ -297,16 +329,32 @@ class AppImageHandler(BaseHandler):
                 if proc.returncode == 0:
                     desktop_entry = None
                     icon_entry = None
-                    current_path = ""
+                    app_update_entry = None
+                    pkg_entry = None
+                    appstream_entry = None
+                    binary_entry = None
+
                     for line in proc.stdout.splitlines():
                         if line.startswith("Path = "):
                             current_path = line[7:].strip()
-                            if current_path.endswith(".desktop") and "/" not in current_path:
-                                desktop_entry = current_path
-                            elif (current_path.endswith(".png") or current_path.endswith(".svg")) and ".DirIcon" in current_path:
+                            clean_lower = current_path.lower()
+                            if clean_lower.endswith(".desktop"):
+                                if not desktop_entry or "/" not in current_path:
+                                    desktop_entry = current_path
+                            elif clean_lower.endswith("app-update.yml"):
+                                app_update_entry = current_path
+                            elif clean_lower.endswith("package.json") and ("resources/app/" in clean_lower or clean_lower == "package.json"):
+                                if not pkg_entry or "resources/app/package.json" in clean_lower:
+                                    pkg_entry = current_path
+                            elif clean_lower.endswith(".metainfo.xml") or clean_lower.endswith(".appdata.xml"):
+                                appstream_entry = current_path
+                            elif (clean_lower.endswith(".png") or clean_lower.endswith(".svg")) and ".diricon" in clean_lower:
                                 icon_entry = current_path
-                            elif not icon_entry and (current_path.endswith(".png") or current_path.endswith(".svg")) and "/" not in current_path:
+                            elif not icon_entry and (clean_lower.endswith(".png") or clean_lower.endswith(".svg")) and "/" not in current_path:
                                 icon_entry = current_path
+                            elif not binary_entry and ("usr/bin/" in current_path or current_path == "AppRun") and "." not in current_path.split("/")[-1]:
+                                if current_path != "AppRun":
+                                    binary_entry = current_path
 
                     # Extract desktop file content to read
                     if desktop_entry:
@@ -319,6 +367,89 @@ class AppImageHandler(BaseHandler):
                         )
                         if proc_e.returncode == 0:
                             meta.update(self._parse_desktop_file_text(proc_e.stdout))
+
+                    # Extract app-update.yml for Electron apps (e.g. Hydra)
+                    if app_update_entry and not meta.get("update_identifier"):
+                        try:
+                            proc_u = subprocess.run(
+                                ["7z", "e", "-so", str(file_path), app_update_entry],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=5,
+                            )
+                            if proc_u.returncode == 0:
+                                owner, repo = None, None
+                                for uline in proc_u.stdout.splitlines():
+                                    if "owner:" in uline:
+                                        owner = uline.split(":", 1)[1].strip().strip('"').strip("'")
+                                    elif "repo:" in uline:
+                                        repo = uline.split(":", 1)[1].strip().strip('"').strip("'")
+                                if owner and repo:
+                                    meta["update_type"] = "github"
+                                    meta["update_identifier"] = f"{owner}/{repo}"
+                        except Exception:
+                            pass
+
+                    # Extract package.json for Electron / Node apps (e.g. Cursor)
+                    if pkg_entry and not meta.get("app_version"):
+                        try:
+                            proc_p = subprocess.run(
+                                ["7z", "e", "-so", str(file_path), pkg_entry],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=5,
+                            )
+                            if proc_p.returncode == 0:
+                                pkg_data = json.loads(proc_p.stdout)
+                                if "version" in pkg_data and pkg_data["version"]:
+                                    meta["package_json_version"] = str(pkg_data["version"])
+                                if "name" in pkg_data and pkg_data["name"]:
+                                    meta["package_json_name"] = str(pkg_data["name"])
+                        except Exception:
+                            pass
+
+                    # Extract AppStream metainfo for Linux native apps
+                    if appstream_entry and not meta.get("app_version") and not meta.get("package_json_version"):
+                        try:
+                            proc_a = subprocess.run(
+                                ["7z", "e", "-so", str(file_path), appstream_entry],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                text=True,
+                                timeout=5,
+                            )
+                            if proc_a.returncode == 0:
+                                m = re.search(r'<release\s+[^>]*version=["\']([^"\']+)["\']', proc_a.stdout)
+                                if m:
+                                    meta["appstream_version"] = m.group(1)
+                        except Exception:
+                            pass
+
+                    # Extract version from Tauri / Rust binary strings if still not found
+                    if (
+                        not meta.get("app_version")
+                        and not meta.get("package_json_version")
+                        and not meta.get("appstream_version")
+                        and binary_entry
+                    ):
+                        try:
+                            proc_b = subprocess.run(
+                                ["7z", "e", "-so", str(file_path), binary_entry],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                timeout=5,
+                            )
+                            if proc_b.returncode == 0:
+                                m_tauri = re.search(
+                                    rb'(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)(?:Unsloth AI|Unsloth Desktop|[A-Z][a-zA-Z0-9]+ (?:AI|Desktop|App))',
+                                    proc_b.stdout
+                                )
+                                if m_tauri:
+                                    meta["tauri_version"] = m_tauri.group(1).decode("utf-8")
+                        except Exception:
+                            pass
 
                     def _is_valid_image(data: bytes) -> bool:
                         if len(data) < 64:
@@ -373,9 +504,74 @@ class AppImageHandler(BaseHandler):
                 k, v = line.split("=", 1)
                 k = k.strip()
                 v = v.strip()
-                if k in ("Name", "Version", "Comment", "Exec", "Icon", "Categories", "GenericName"):
+                if k in ("Name", "Comment", "Exec", "Icon", "Categories", "GenericName"):
                     info[k] = v
+                elif k in ("X-AppImage-Version", "X-AppImageKit-Version", "X-Version"):
+                    info["app_version"] = v
+                elif k == "Version":
+                    # Freedesktop specification version (1.0, 1.1) vs application version
+                    if v in ("1.0", "1.1", "1.2", "1.3", "1.4", "1.5"):
+                        info["desktop_spec_version"] = v
+                    else:
+                        info["desktop_version"] = v
+                elif k == "X-AppImage-UpdateInformation":
+                    info["update_information"] = v
+                    if v.startswith("gh-releases-zsync|"):
+                        parts = v.split("|")
+                        if len(parts) >= 3 and parts[1] and parts[2]:
+                            info["update_type"] = "github"
+                            info["update_identifier"] = f"{parts[1]}/{parts[2]}"
+                    elif v.startswith("zsync|"):
+                        info["zsync_url"] = v.split("zsync|", 1)[1].strip()
         return info
+
+    def check_update(self, app: InstalledApp) -> Optional[UpdateCheckResult]:
+        from dropin.network.github import GitHubResolver
+
+        update_type = app.update_type
+        update_id = app.update_identifier
+
+        # If not recorded yet in registry, try inspecting the installed binary on disk
+        if (not update_id or update_type == "none") and app.file_path and Path(app.file_path).is_file():
+            try:
+                meta = self._extract_appimage_metadata(Path(app.file_path))
+                if meta.get("update_type") and meta.get("update_identifier"):
+                    update_type = meta["update_type"]
+                    update_id = meta["update_identifier"]
+            except Exception:
+                pass
+
+        if update_type == "github" and update_id:
+            resolver = GitHubResolver()
+            url = f"https://github.com/{update_id}" if not update_id.startswith("http") else update_id
+            info, msg = resolver.fetch_release(url)
+            if not info:
+                return UpdateCheckResult(
+                    app_id=app.id,
+                    current_version=app.version,
+                    latest_version=app.version,
+                    update_available=False,
+                    message=f"Update check failed: {msg}",
+                )
+
+            is_newer = is_newer_version(info.tag_name, app.version)
+            best_asset = info.assets[0] if info.assets else None
+            download_url = best_asset.download_url if (best_asset and is_newer) else None
+
+            return UpdateCheckResult(
+                app_id=app.id,
+                current_version=app.version,
+                latest_version=info.tag_name,
+                update_available=is_newer,
+                download_url=download_url,
+                changelog=info.description,
+                message=(
+                    f"Update available from GitHub ({info.owner}/{info.repo}): {info.tag_name}"
+                    if is_newer
+                    else f"Up to date with GitHub ({info.owner}/{info.repo}) — {info.tag_name}"
+                ),
+            )
+        return None
 
     def _save_icon(self, app_id: str, icon_bytes: Optional[bytes], appimage_path: Path) -> Optional[str]:
         icons_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"

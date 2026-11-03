@@ -138,6 +138,12 @@ class SnapHandler(BaseHandler):
         if progress_callback:
             progress_callback(100, "Installation complete.")
 
+        try:
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
+        except Exception:
+            pass
+
         snap_name = info.name
         launch_cmd = f"snap run {snap_name}"
         app_id = f"dropin-snap-{snap_name}"
@@ -162,7 +168,14 @@ class SnapHandler(BaseHandler):
                 text=True,
                 timeout=120,
             )
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                try:
+                    from dropin.core.desktop import update_desktop_caches
+                    update_desktop_caches()
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception as e:
             get_logger().error(f"Snap uninstall failed: {e}")
             return False

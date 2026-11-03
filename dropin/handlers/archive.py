@@ -22,6 +22,7 @@ from dropin.core.models import (
     PackageFormat,
 )
 from dropin.core.security import validate_archive_members, secure_file_permissions
+from dropin.core.versions import extract_semantic_version, normalize_version
 from dropin.handlers.base import BaseHandler
 
 
@@ -218,10 +219,12 @@ class ArchiveHandler(BaseHandler):
 
         app_name = self._extract_clean_name(file_path.name)
         dest_dir = get_config().portable_dir / re.sub(r"[^\w\-.]", "_", app_name)
+        raw_version = extract_semantic_version(file_path.name) or "1.0.0"
+        version = normalize_version(raw_version) or "1.0.0"
 
         return AppPackageInfo(
             name=app_name,
-            version="1.0.0",
+            version=version,
             format=PackageFormat.ARCHIVE,
             architecture=distro.arch,
             file_path=str(file_path),
@@ -305,6 +308,10 @@ class ArchiveHandler(BaseHandler):
         launcher_path = self._create_launcher(
             app_id, info.name, exec_path, icon_path=icon_path
         )
+
+        detected_ver = self._detect_version_from_extracted_dir(dest_dir)
+        if detected_ver:
+            info.version = normalize_version(detected_ver) or info.version
 
         if progress_callback:
             progress_callback(100, "Installation complete.")
@@ -552,3 +559,72 @@ class ArchiveHandler(BaseHandler):
                 "Failed to write archive desktop launcher for %s", name, exc_info=True
             )
             return None
+
+    def _detect_version_from_extracted_dir(self, dest_dir: Path) -> Optional[str]:
+        """Inspect extracted files for real application version (JetBrains product-info.json, package.json, build.txt)."""
+        # 1. product-info.json (JetBrains IDEs, Android Studio)
+        try:
+            for p in dest_dir.rglob("product-info.json"):
+                if p.is_file():
+                    import json
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    data_dir = data.get("dataDirectoryName", "")
+                    m_year = re.search(r"(\d{4}\.\d+(?:\.\d+)?)", data_dir)
+                    if m_year:
+                        return m_year.group(1)
+                    if "version" in data and data["version"]:
+                        v = str(data["version"])
+                        if "-" in v and v.split("-")[0].isupper():
+                            v = v.split("-", 1)[1]
+                        return v
+        except Exception:
+            pass
+
+        # 2. package.json (portable Node/Electron apps)
+        try:
+            for p in dest_dir.rglob("package.json"):
+                if p.is_file() and "node_modules" not in str(p):
+                    import json
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if "version" in data and data["version"]:
+                        return str(data["version"])
+        except Exception:
+            pass
+
+        # 3. build.txt (JetBrains fallback)
+        try:
+            for p in dest_dir.rglob("build.txt"):
+                if p.is_file():
+                    txt = p.read_text(encoding="utf-8").strip()
+                    if txt and len(txt) < 80:
+                        m = re.search(r"(\d+\.\d+(?:\.\d+)*)", txt)
+                        if m:
+                            return m.group(1)
+        except Exception:
+            pass
+
+        # 4. CHANGELOG.md / ChangeLog (e.g. Lightspeed)
+        try:
+            for name in ("CHANGELOG.md", "ChangeLog.md", "changelog.md", "CHANGELOG", "ChangeLog"):
+                for p in dest_dir.rglob(name):
+                    if p.is_file():
+                        content = p.read_text(encoding="utf-8", errors="ignore")
+                        m = re.search(r"##\s*\[v?(\d+\.\d+(?:\.\d+)*)\]", content)
+                        if m:
+                            return m.group(1)
+        except Exception:
+            pass
+
+        # 5. Check binaries for Rust/C++ semver strings (e.g. ALVR)
+        try:
+            for bin_path in dest_dir.rglob("*"):
+                if bin_path.is_file() and os.access(bin_path, os.X_OK) and bin_path.stat().st_size < 300 * 1024 * 1024:
+                    with open(bin_path, "rb") as f:
+                        buf = f.read(32 * 1024 * 1024)
+                        m = re.search(rb"(\d+\.\d+\.\d+)(?:[a-zA-Z0-9_\-/]*version\.rs)", buf)
+                        if m:
+                            return m.group(1).decode("utf-8")
+        except Exception:
+            pass
+
+        return None

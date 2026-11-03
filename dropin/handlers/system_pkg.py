@@ -236,19 +236,13 @@ class SystemPkgHandler(BaseHandler):
         if progress_callback:
             progress_callback(100, "Installation complete.")
 
-        launch_cmd = pkg_name
         try:
-            which_proc = subprocess.run(
-                ["which", pkg_name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=5,
-            )
-            if which_proc.returncode == 0:
-                launch_cmd = which_proc.stdout.strip()
+            from dropin.core.desktop import update_desktop_caches
+            update_desktop_caches()
         except Exception:
             pass
+
+        launch_cmd = shutil.which(pkg_name) or pkg_name
 
         return InstallResult(
             success=True,
@@ -271,7 +265,14 @@ class SystemPkgHandler(BaseHandler):
                 text=True,
                 timeout=120,
             )
-            return proc.returncode == 0
+            if proc.returncode == 0:
+                try:
+                    from dropin.core.desktop import update_desktop_caches
+                    update_desktop_caches()
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception as e:
             get_logger().error(f"System package uninstall failed: {e}")
             return False

@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         self._update_id: str = ""
         self._expected_sha256: str = ""
         self._expected_format: Optional[PackageFormat] = None
+        self._downloaded_version: str = ""
 
         # Background worker threads
         self._download_thread: Optional[QThread] = None
@@ -746,6 +747,7 @@ class MainWindow(QMainWindow):
             self._source_url = selected_asset.download_url
             self._update_type = "github"
             self._update_id = f"{release_info.owner}/{release_info.repo}"
+            self._downloaded_version = release_info.tag_name or ""
             self._expected_sha256 = selected_asset.digest or ""
             self._expected_format = selected_asset.format
             self._start_download(
@@ -759,6 +761,7 @@ class MainWindow(QMainWindow):
             self._source_url = resolved.url
             self._update_type = "none"
             self._update_id = ""
+            self._downloaded_version = ""
             self._expected_sha256 = ""
             self._expected_format = PackageFormat.from_extension(resolved.suggested_name or resolved.url)
             self._start_download(
@@ -847,6 +850,15 @@ class MainWindow(QMainWindow):
 
         if info.name == path.name:
             info.name = filename.split(".")[0]
+
+        # Reconcile version if downloaded from a known GitHub release
+        if self._downloaded_version and (info.version in ("1.0.0", "1.0", "unknown") or not info.version):
+            info.version = self._downloaded_version
+
+        # Reconcile update channel if discovered in package extra_metadata
+        if self._update_type == "none" and info.extra_metadata.get("update_type"):
+            self._update_type = info.extra_metadata["update_type"]
+            self._update_id = info.extra_metadata.get("update_identifier", "")
 
         info.sha256 = sha256 or ""
         info.expected_sha256 = self._expected_sha256 or ""
@@ -968,6 +980,16 @@ class MainWindow(QMainWindow):
                 or self._current_package_info.icon_path
                 or ""
             )
+            up_type = (
+                self._update_type
+                if self._update_type and self._update_type != "none"
+                else self._current_package_info.extra_metadata.get("update_type", "none")
+            )
+            up_id = (
+                self._update_id
+                if self._update_id
+                else self._current_package_info.extra_metadata.get("update_identifier", "")
+            )
             app_record = InstalledApp(
                 id=result.app_id or f"dropin-{self._current_package_info.name.lower()}",
                 name=self._current_package_info.name,
@@ -978,8 +1000,8 @@ class MainWindow(QMainWindow):
                 icon_path=icon,
                 install_date=now_str,
                 source_url=self._source_url,
-                update_type=self._update_type,
-                update_identifier=self._update_id,
+                update_type=up_type,
+                update_identifier=up_id,
                 scope="user" if not self._current_package_info.requires_root else "system",
                 last_update_check=now_str,
                 latest_version=self._current_package_info.version,

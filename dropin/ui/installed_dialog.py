@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from dropin.core.models import InstalledApp
 from dropin.core.registry import get_registry
+from dropin.core.versions import clean_display_version
 from dropin.handlers import get_handlers
 from dropin.updater.manager import UpdateManager
 from dropin.ui.animations import fade_widget
@@ -101,9 +102,13 @@ class AppItemWidget(QWidget):
         self.name_label.setToolTip(self.app.name)
         info_col.addWidget(self.name_label)
 
-        bits = [self.app.format, f"v{self.app.version}"]
+        app_ver = clean_display_version(self.app.version) if self.app.version else ""
+        bits = [self.app.format]
+        if app_ver:
+            bits.append(app_ver)
         if self.app.update_available and self.app.latest_version:
-            bits.append(f"update {self.app.latest_version}")
+            latest_clean = clean_display_version(self.app.latest_version)
+            bits.append(f"update {latest_clean}")
         self._full_sub = ", ".join(bits)
         self.sub_label = QLabel(self._full_sub, self)
         self.sub_label.setObjectName("mutedLabel")
@@ -331,8 +336,10 @@ class InstalledAppsDialog(QDialog):
             f"Destination: {app.file_path or 'System'}\n"
             f"Launcher: {app.launcher_path or 'Standard'}"
         )
+        clean_ver = clean_display_version(app.version) if app.version else ""
+        ver_str = f" ({clean_ver})" if clean_ver else ""
         msg = (
-            f"Uninstall {app.name} (v{app.version})?\n\n"
+            f"Uninstall {app.name}{ver_str}?\n\n"
             f"{scope_info}\n\n"
             "This removes the application and its desktop launcher. "
             "Unrelated personal files are left untouched."

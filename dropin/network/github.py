@@ -44,7 +44,7 @@ class GitHubResolver:
     """Resolves GitHub repository and release URLs into installable assets."""
 
     GITHUB_URL_PATTERN = re.compile(
-        r"^https?://(?:www\.)?github\.com/([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)(?:/(?:releases(?:/(?:tag/([^/\s]+)|latest)?)?))?/?$"
+        r"^https?://(?:www\.)?github\.com/([a-zA-Z0-9_\-\.]+)/([a-zA-Z0-9_\-\.]+)(?:/(?:releases(?:/(?:tag/([^/\s]+)|download/([^/\s]+)/[^/\s]+|latest)?)?))?/?$"
     )
 
     @classmethod
@@ -61,8 +61,14 @@ class GitHubResolver:
         repo = match.group(2)
         if repo.endswith(".git"):
             repo = repo[:-4]
-        tag = match.group(3)
+        tag = match.group(3) or match.group(4)
         return (owner, repo, tag)
+
+    @classmethod
+    def parse_release_asset_filename(cls, url: str) -> Optional[str]:
+        """Extracts filename if this is a direct /releases/download/<tag>/<filename> URL."""
+        m = re.match(r"^https?://(?:www\.)?github\.com/[^/]+/[^/]+/releases/download/[^/]+/([^/?#]+)", url.strip())
+        return m.group(1) if m else None
 
     def fetch_release(self, url: str) -> Tuple[Optional[GitHubReleaseInfo], str]:
         parsed = self.parse_url(url)
@@ -70,6 +76,7 @@ class GitHubResolver:
             return None, "Not a recognized GitHub repository or release URL."
 
         owner, repo, tag = parsed
+        target_filename = self.parse_release_asset_filename(url)
         api_url = f"https://api.github.com/repos/{owner}/{repo}/releases"
         if tag:
             api_url += f"/tags/{tag}"
@@ -86,12 +93,64 @@ class GitHubResolver:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
+            # If rate-limited or error but URL has a direct release asset download, fallback gracefully
+            if target_filename:
+                fmt = PackageFormat.from_extension(target_filename)
+                if fmt != PackageFormat.UNKNOWN:
+                    distro = get_current_distribution()
+                    arch = self._detect_asset_arch(target_filename)
+                    direct_asset = GitHubAsset(
+                        name=target_filename,
+                        download_url=url,
+                        size_bytes=0,
+                        format=fmt,
+                        architecture=arch,
+                        compatibility_score=1000,
+                        tag_name=tag or "latest",
+                    )
+                    info = GitHubReleaseInfo(
+                        owner=owner,
+                        repo=repo,
+                        tag_name=tag or "latest",
+                        release_name=tag or repo,
+                        published_at="",
+                        description=f"Direct release download from {owner}/{repo}",
+                        html_url=url,
+                        assets=[direct_asset]
+                    )
+                    return info, "Success"
+
             if e.code == 404:
                 return None, f"No published releases found for GitHub repository '{owner}/{repo}'."
             elif e.code == 403:
                 return None, "GitHub API rate limit exceeded. Please try again later."
             return None, f"GitHub API error: {e.reason} (HTTP {e.code})"
         except Exception as e:
+            if target_filename:
+                fmt = PackageFormat.from_extension(target_filename)
+                if fmt != PackageFormat.UNKNOWN:
+                    distro = get_current_distribution()
+                    arch = self._detect_asset_arch(target_filename)
+                    direct_asset = GitHubAsset(
+                        name=target_filename,
+                        download_url=url,
+                        size_bytes=0,
+                        format=fmt,
+                        architecture=arch,
+                        compatibility_score=1000,
+                        tag_name=tag or "latest",
+                    )
+                    info = GitHubReleaseInfo(
+                        owner=owner,
+                        repo=repo,
+                        tag_name=tag or "latest",
+                        release_name=tag or repo,
+                        published_at="",
+                        description=f"Direct release download from {owner}/{repo}",
+                        html_url=url,
+                        assets=[direct_asset]
+                    )
+                    return info, "Success"
             return None, f"Failed to connect to GitHub: {str(e)}"
 
         raw_assets = data.get("assets", [])
@@ -112,6 +171,8 @@ class GitHubResolver:
 
             arch = self._detect_asset_arch(name)
             score = self._compute_compatibility_score(name, fmt, arch, distro)
+            if target_filename and name.lower() == target_filename.lower():
+                score += 1000
 
             assets.append(GitHubAsset(
                 name=name,
