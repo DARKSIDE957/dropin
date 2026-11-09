@@ -21,7 +21,19 @@ from dropin.core.models import (
     InstallResult,
     PackageFormat,
 )
-from dropin.core.security import validate_archive_members, secure_file_permissions
+from dropin.core.desktop import (
+    detect_image_format,
+    remove_application_icons,
+    save_application_icon,
+    update_desktop_caches,
+    write_desktop_entry,
+)
+from dropin.core.security import (
+    check_directory_writable,
+    check_disk_space,
+    secure_file_permissions,
+    validate_archive_members,
+)
 from dropin.core.versions import extract_semantic_version, normalize_version
 from dropin.handlers.base import BaseHandler
 
@@ -269,6 +281,24 @@ class ArchiveHandler(BaseHandler):
         safe_name = re.sub(r"[^\w\-.]", "_", info.name)
         if dest_dir is None:
             dest_dir = get_config().portable_dir / safe_name
+
+        ok_write, write_msg = check_directory_writable(dest_dir.parent)
+        if not ok_write:
+            return InstallResult(
+                success=False,
+                message=write_msg,
+                error_details=write_msg,
+            )
+
+        src_size = src_path.stat().st_size
+        ok_space, space_msg = check_disk_space(dest_dir.parent, src_size, safety_multiplier=2.5)
+        if not ok_space:
+            return InstallResult(
+                success=False,
+                message=space_msg,
+                error_details=space_msg,
+            )
+
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         if progress_callback:
@@ -304,7 +334,7 @@ class ArchiveHandler(BaseHandler):
             progress_callback(80, "Creating desktop launcher...")
 
         app_id = f"dropin-archive-{safe_name.lower()}"
-        icon_path = self._find_icon(dest_dir, exec_path)
+        icon_path = self._find_icon(dest_dir, exec_path, app_id=app_id)
         launcher_path = self._create_launcher(
             app_id, info.name, exec_path, icon_path=icon_path
         )
@@ -366,8 +396,15 @@ class ArchiveHandler(BaseHandler):
                         "Failed to remove archive launcher %s", launcher, exc_info=True
                     )
 
+        if app.icon_path and Path(app.icon_path).is_file():
+            try:
+                Path(app.icon_path).unlink()
+            except Exception:
+                get_logger().warning("Failed to remove archive icon %s", app.icon_path, exc_info=True)
+        if app.id:
+            remove_application_icons(app.id)
+
         if removed_any:
-            from dropin.core.desktop import update_desktop_caches
             update_desktop_caches()
 
         still_there = [str(t) for t in targets if t.exists()]
@@ -504,24 +541,67 @@ class ArchiveHandler(BaseHandler):
         get_logger().info(f"Selected portable launcher: {chosen} (score={scored[0][0]})")
         return chosen
 
-    def _find_icon(self, dest_dir: Path, exec_path: Optional[Path]) -> Optional[str]:
-        """Prefer a product icon next to the launcher (e.g. studio.svg)."""
+    def _find_icon(
+        self,
+        dest_dir: Path,
+        exec_path: Optional[Path],
+        app_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Find the application icon and save it cleanly into the user's icon theme."""
         search_roots = []
         if exec_path is not None:
             search_roots.append(exec_path.parent)
         search_roots.append(dest_dir)
-        names = ("studio.svg", "idea.svg", "icon.svg", "icon.png", "studio.png")
+        # Also check standard subdirectories
+        for sub in ("share/icons", "share/pixmaps", "resources", "assets"):
+            p_sub = dest_dir / sub
+            if p_sub.is_dir():
+                search_roots.append(p_sub)
+
+        names = ("studio.svg", "idea.svg", "icon.svg", "icon.png", "studio.png", "app.png", "app.svg")
+        found_candidate: Optional[Path] = None
+
         for root in search_roots:
+            if not root.is_dir():
+                continue
             for name in names:
                 candidate = root / name
                 if candidate.is_file():
-                    return str(candidate)
-            # Generic: any svg/png beside the launcher with product-ish name
-            if root.is_dir():
+                    try:
+                        data = candidate.read_bytes()
+                        if detect_image_format(data) is not None:
+                            found_candidate = candidate
+                            break
+                    except Exception:
+                        pass
+            if found_candidate:
+                break
+
+            # Generic: any svg/png beside the launcher or in root
+            try:
                 for p in root.iterdir():
-                    if p.suffix.lower() in {".svg", ".png"} and p.is_file():
-                        return str(p)
-        return None
+                    if p.is_file() and p.suffix.lower() in {".svg", ".png"}:
+                        try:
+                            data = p.read_bytes()
+                            if detect_image_format(data) is not None:
+                                found_candidate = p
+                                break
+                        except Exception:
+                            pass
+                if found_candidate:
+                    break
+            except Exception:
+                pass
+
+        if not found_candidate:
+            return None
+
+        if app_id:
+            saved = save_application_icon(app_id, source_icon_path=found_candidate)
+            if saved:
+                return saved
+
+        return str(found_candidate)
 
     def _create_launcher(
         self,
@@ -530,35 +610,15 @@ class ArchiveHandler(BaseHandler):
         exec_path: Path,
         icon_path: Optional[str] = None,
     ) -> Optional[Path]:
-        launchers_dir = Path.home() / ".local" / "share" / "applications"
-        launchers_dir.mkdir(parents=True, exist_ok=True)
-        launcher_path = launchers_dir / f"{app_id}.desktop"
-        icon = icon_path or "application-x-executable"
-
-        # No %U/%F field codes: JetBrains helper scripts treat extra args as
-        # CLI modes (e.g. format.sh → "format"), which looks like a crash.
-        content = (
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            f"Name={name}\n"
-            f'Exec="{exec_path}"\n'
-            f"Icon={icon}\n"
-            "Terminal=false\n"
-            "StartupNotify=true\n"
-            "Categories=Development;IDE;Utility;\n"
-            "X-Dropin-Managed=true\n"
+        return write_desktop_entry(
+            app_id=app_id,
+            name=name,
+            exec_path=exec_path,
+            icon_path=icon_path,
+            comment=f"{name} Portable Application",
+            generic_name=name,
+            categories="Development;IDE;Utility;",
         )
-        try:
-            launcher_path.write_text(content, encoding="utf-8")
-            secure_file_permissions(str(launcher_path), is_executable=True)
-            from dropin.core.desktop import update_desktop_caches
-            update_desktop_caches()
-            return launcher_path
-        except Exception:
-            get_logger().warning(
-                "Failed to write archive desktop launcher for %s", name, exc_info=True
-            )
-            return None
 
     def _detect_version_from_extracted_dir(self, dest_dir: Path) -> Optional[str]:
         """Inspect extracted files for real application version (JetBrains product-info.json, package.json, build.txt)."""

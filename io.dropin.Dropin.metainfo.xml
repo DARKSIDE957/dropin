@@ -50,6 +50,18 @@
     <display_length compare="ge">360</display_length>
   </requires>
   <releases>
+    <release version="1.0.2" date="2026-11-09">
+      <description>
+        <p>Comprehensive application icon repair, Bazzite &amp; immutable Linux compatibility, and enhanced desktop integration.</p>
+        <ul>
+          <li>Fixed icon extraction for AppImages with squashfs symlinks (such as Hydra) and eliminated Dropin icon leaks</li>
+          <li>Automatic registry repair mechanism to heal existing installed applications without reinstallation</li>
+          <li>Full Bazzite Linux / Fedora Atomic compatibility with isolated virtual environment fallback</li>
+          <li>KDE Plasma and XDG desktop cache synchronization (kbuildsycoca6 and gtk-update-icon-cache)</li>
+          <li>Automatic cleanup of stale application records and obsolete launchers</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.1" date="2026-10-15">
       <description>
         <p>Integrity checks, system theme matching, and Settings layout fixes.</p>

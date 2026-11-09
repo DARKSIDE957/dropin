@@ -84,11 +84,25 @@ class AppRegistry:
         self.sync_and_repair_installed_apps()
 
     def sync_and_repair_installed_apps(self) -> int:
-        """Repairs stale or corrupt metadata (e.g. 1.0.0 desktop spec fallback versions, missing update links)."""
+        """
+        Repairs stale or corrupt metadata:
+        1. Fixes applications previously installed with Dropin's own icon (Priority 1).
+        2. Cleans up stale registry records whose files no longer exist on disk.
+        3. Synchronizes semantic version strings and GitHub update identifiers.
+        4. Cleans up orphan desktop launchers and refreshes KDE / XDG desktop caches.
+        """
         repaired = 0
+        needs_cache_update = False
         try:
             from dropin.handlers.appimage import AppImageHandler
             from dropin.handlers.archive import ArchiveHandler
+            from dropin.core.desktop import (
+                is_dropin_own_icon,
+                save_application_icon,
+                update_desktop_caches,
+                write_desktop_entry,
+                cleanup_obsolete_dropin_launchers,
+            )
             from dropin.core.versions import normalize_version
 
             appimage_handler = AppImageHandler()
@@ -96,22 +110,111 @@ class AppRegistry:
 
             with self._get_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, name, version, format, file_path, update_type, update_identifier FROM installed_apps")
+                cursor.execute("""
+                    SELECT id, name, version, format, file_path, launcher_path, icon_path,
+                           update_type, update_identifier, launch_command
+                    FROM installed_apps
+                """)
                 rows = cursor.fetchall()
+
+                valid_exec_paths = set()
+
                 for row in rows:
                     app_id = row["id"]
                     name = row["name"]
                     version = row["version"] or ""
                     fmt = row["format"] or ""
                     file_path = row["file_path"] or ""
+                    launcher_path = row["launcher_path"] or ""
+                    icon_path = row["icon_path"] or ""
                     up_type = row["update_type"] or "none"
                     up_id = row["update_identifier"] or ""
+                    launch_cmd = row["launch_command"] or ""
 
+                    p = Path(file_path) if file_path else None
+
+                    # 1. Clean up stale registry records when portable binary was deleted outside Dropin
+                    if fmt in ("AppImage", "Archive") and p:
+                        if not p.exists():
+                            if launcher_path and Path(launcher_path).is_file():
+                                try:
+                                    Path(launcher_path).unlink()
+                                except Exception:
+                                    pass
+                            cursor.execute("DELETE FROM installed_apps WHERE id = ?", (app_id,))
+                            cursor.execute("""
+                                INSERT INTO audit_logs (timestamp, action, target, status, details)
+                                VALUES (?, 'CLEANUP', ?, 'SUCCESS', 'Removed stale registry entry (binary no longer on disk)')
+                            """, (datetime.now().isoformat(), name))
+                            repaired += 1
+                            needs_cache_update = True
+                            continue
+
+                    if p and p.exists():
+                        valid_exec_paths.add(str(p))
+
+                    # 2. Repair applications suffering from the Icon Bug (received Dropin's own icon or missing icon)
+                    needs_icon_repair = False
+                    if not icon_path or not Path(icon_path).is_file():
+                        needs_icon_repair = True
+                    elif is_dropin_own_icon(icon_path):
+                        needs_icon_repair = True
+
+                    if needs_icon_repair and p and p.exists():
+                        new_icon_path = None
+                        if fmt == "AppImage" and p.is_file():
+                            meta = appimage_handler._extract_appimage_metadata(p)
+                            if meta.get("icon_bytes"):
+                                new_icon_path = save_application_icon(app_id, meta["icon_bytes"])
+                        elif fmt == "Archive" and p.is_dir():
+                            found_icon = archive_handler._find_icon(p, Path(launch_cmd) if launch_cmd else None)
+                            if found_icon:
+                                new_icon_path = save_application_icon(app_id, source_icon_path=found_icon)
+
+                        if new_icon_path:
+                            target_launcher = (
+                                Path(launcher_path)
+                                if launcher_path and Path(launcher_path).is_file()
+                                else Path.home() / ".local" / "share" / "applications" / f"{app_id}.desktop"
+                            )
+                            if target_launcher.is_file():
+                                try:
+                                    lines = []
+                                    for l in target_launcher.read_text(encoding="utf-8").splitlines():
+                                        if l.startswith("Icon="):
+                                            lines.append(f"Icon={new_icon_path}")
+                                        else:
+                                            lines.append(l)
+                                    target_launcher.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                                except Exception as e:
+                                    get_logger().warning("Failed to update launcher icon: %s", e)
+                            else:
+                                write_desktop_entry(
+                                    app_id=app_id,
+                                    name=name,
+                                    exec_path=p,
+                                    icon_path=new_icon_path,
+                                    comment=f"{name} Application",
+                                    generic_name=name,
+                                )
+
+                            cursor.execute(
+                                "UPDATE installed_apps SET icon_path = ?, launcher_path = ? WHERE id = ?",
+                                (new_icon_path, str(target_launcher), app_id)
+                            )
+                            cursor.execute("""
+                                INSERT INTO audit_logs (timestamp, action, target, status, details)
+                                VALUES (?, 'REPAIR_ICON', ?, 'SUCCESS', ?)
+                            """, (datetime.now().isoformat(), name, f"Repaired application icon: {new_icon_path}"))
+                            repaired += 1
+                            needs_cache_update = True
+                            icon_path = new_icon_path
+
+                    # 3. Synchronize version and update metadata
                     new_version = version
                     new_up_type = up_type
                     new_up_id = up_id
 
-                    p = Path(file_path) if file_path else None
                     if fmt == "AppImage" and p and p.is_file():
                         info = appimage_handler.inspect(p)
                         if info.version and info.version != "1.0.0":
@@ -137,11 +240,18 @@ class AppRegistry:
                             (new_version, new_version, new_up_type, new_up_id, app_id)
                         )
                         repaired += 1
+
+                # 4. Clean up any broken desktop files whose binaries no longer exist
+                cleanup_obsolete_dropin_launchers(valid_exec_paths)
+
                 if repaired > 0:
                     conn.commit()
                     get_logger().info(f"Synchronized and repaired {repaired} application registry records.")
+
+            if needs_cache_update:
+                update_desktop_caches()
         except Exception as e:
-            get_logger().debug(f"Registry repair skipped or encountered error: {e}")
+            get_logger().warning(f"Registry repair encountered error: {e}", exc_info=True)
         return repaired
 
     def add_app(self, app: InstalledApp) -> bool:

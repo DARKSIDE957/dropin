@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Optional, Callable, Tuple, Dict, Any
 
 from dropin.core.config import get_config
+from dropin.core.desktop import (
+    detect_image_format,
+    remove_application_icons,
+    save_application_icon,
+    update_desktop_caches,
+    write_desktop_entry,
+)
 from dropin.core.distro import get_current_distribution
 from dropin.core.logger import get_logger
 from dropin.core.models import (
@@ -24,7 +31,11 @@ from dropin.core.models import (
     PackageFormat,
     UpdateCheckResult,
 )
-from dropin.core.security import secure_file_permissions
+from dropin.core.security import (
+    check_directory_writable,
+    check_disk_space,
+    secure_file_permissions,
+)
 from dropin.core.versions import extract_semantic_version, is_newer_version, normalize_version
 from dropin.handlers.base import BaseHandler
 
@@ -130,6 +141,24 @@ class AppImageHandler(BaseHandler):
 
         if dest_dir is None:
             dest_dir = get_config().appimage_dir
+
+        ok_write, write_msg = check_directory_writable(dest_dir)
+        if not ok_write:
+            return InstallResult(
+                success=False,
+                message=write_msg,
+                error_details=write_msg,
+            )
+
+        src_size = src_path.stat().st_size
+        ok_space, space_msg = check_disk_space(dest_dir, src_size, safety_multiplier=1.1)
+        if not ok_space:
+            return InstallResult(
+                success=False,
+                message=space_msg,
+                error_details=space_msg,
+            )
+
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Sanitize target filename
@@ -140,14 +169,20 @@ class AppImageHandler(BaseHandler):
         if progress_callback:
             progress_callback(30, f"Copying application to {dest_dir}...")
 
+        temp_target = target_path.with_suffix(".tmp")
         try:
-            # Atomic copy to destination
-            temp_target = target_path.with_suffix(".tmp")
-            shutil.copy2(src_path, temp_target)
-            secure_file_permissions(str(temp_target), is_executable=True)
-            temp_target.replace(target_path)
+            if src_path.resolve() != target_path.resolve():
+                # Atomic copy to destination
+                shutil.copy2(src_path, temp_target)
+                secure_file_permissions(str(temp_target), is_executable=True)
+                temp_target.replace(target_path)
             secure_file_permissions(str(target_path), is_executable=True)
         except Exception as e:
+            if temp_target.exists():
+                try:
+                    temp_target.unlink()
+                except Exception:
+                    pass
             return InstallResult(
                 success=False,
                 message="Failed to copy AppImage to destination.",
@@ -158,18 +193,29 @@ class AppImageHandler(BaseHandler):
             progress_callback(60, "Configuring desktop integration and icon...")
 
         app_id = f"dropin-appimage-{safe_name.lower()}"
-        icon_path = self._save_icon(app_id, info.icon_bytes, target_path)
+        icon_bytes = info.icon_bytes
+        if not icon_bytes:
+            # Re-probe installed binary if inspect occurred before full metadata extraction
+            fresh_meta = self._extract_appimage_metadata(target_path)
+            icon_bytes = fresh_meta.get("icon_bytes")
+            if fresh_meta and not info.extra_metadata:
+                info.extra_metadata = fresh_meta
+
+        icon_path = self._save_icon(app_id, icon_bytes, target_path)
 
         if progress_callback:
             progress_callback(80, "Creating application launcher...")
 
+        meta = info.extra_metadata or {}
         launcher_path = self._create_desktop_launcher(
             app_id=app_id,
             name=info.name,
             exec_path=target_path,
             icon_path=icon_path,
             comment=info.description or f"{info.name} AppImage",
-            categories=info.extra_metadata.get("Categories", "Utility;")
+            categories=meta.get("Categories", "Utility;"),
+            startup_wm_class=meta.get("StartupWMClass", ""),
+            mime_types=meta.get("MimeType", ""),
         )
 
         if progress_callback:
@@ -237,6 +283,8 @@ class AppImageHandler(BaseHandler):
                 get_logger().warning(
                     "Failed to remove AppImage icon %s", app.icon_path, exc_info=True
                 )
+        if app.id:
+            remove_application_icons(app.id)
 
         self._update_desktop_db()
 
@@ -327,6 +375,7 @@ class AppImageHandler(BaseHandler):
                     timeout=5
                 )
                 if proc.returncode == 0:
+                    all_archive_paths: list[str] = []
                     desktop_entry = None
                     icon_entry = None
                     app_update_entry = None
@@ -337,6 +386,7 @@ class AppImageHandler(BaseHandler):
                     for line in proc.stdout.splitlines():
                         if line.startswith("Path = "):
                             current_path = line[7:].strip()
+                            all_archive_paths.append(current_path)
                             clean_lower = current_path.lower()
                             if clean_lower.endswith(".desktop"):
                                 if not desktop_entry or "/" not in current_path:
@@ -452,37 +502,75 @@ class AppImageHandler(BaseHandler):
                             pass
 
                     def _is_valid_image(data: bytes) -> bool:
-                        if len(data) < 64:
+                        if not data or len(data) < 32:
                             return False
-                        if data.startswith(b"\x89PNG\r\n\x1a\n"):
-                            return True
-                        if b"<svg" in data[:300].lower():
-                            return True
-                        return False
+                        return detect_image_format(data) is not None
+
+                    # Build prioritized icon search list
+                    icon_candidates: list[str] = []
+                    if ".DirIcon" in all_archive_paths:
+                        icon_candidates.append(".DirIcon")
+                    if icon_entry and icon_entry not in icon_candidates:
+                        icon_candidates.append(icon_entry)
+
+                    meta_icon = (meta.get("Icon") or "").strip().lower()
+                    if meta_icon:
+                        for p in all_archive_paths:
+                            p_lower = p.lower()
+                            if p_lower.endswith(f"/{meta_icon}.png") or p_lower.endswith(f"/{meta_icon}.svg") or p_lower == f"{meta_icon}.png" or p_lower == f"{meta_icon}.svg":
+                                if p not in icon_candidates:
+                                    icon_candidates.append(p)
+
+                    # Add standard hicolor paths by resolution preference
+                    for size in ("512x512", "256x256", "128x128", "scalable", "96x96", "64x64", "48x48", "32x32"):
+                        for p in all_archive_paths:
+                            p_lower = p.lower()
+                            if f"/icons/hicolor/{size}/" in p_lower and (p_lower.endswith(".png") or p_lower.endswith(".svg")):
+                                if p not in icon_candidates:
+                                    icon_candidates.append(p)
+
+                    # Add any remaining png or svg in the archive
+                    for p in all_archive_paths:
+                        p_lower = p.lower()
+                        if (p_lower.endswith(".png") or p_lower.endswith(".svg")) and p not in icon_candidates:
+                            icon_candidates.append(p)
 
                     valid_icon = False
-                    if icon_entry or ".DirIcon" in proc.stdout:
-                        icon_target = icon_entry if icon_entry else ".DirIcon"
-                        proc_i = subprocess.run(
-                            ["7z", "e", "-so", str(file_path), icon_target],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=5
-                        )
-                        if proc_i.returncode == 0 and _is_valid_image(proc_i.stdout):
-                            meta["icon_bytes"] = proc_i.stdout
-                            valid_icon = True
-
-                    # If .DirIcon was a symlink or invalid image, try other icon entries in the archive
-                    if not valid_icon and icon_entry:
-                        proc_fallback = subprocess.run(
-                            ["7z", "e", "-so", str(file_path), icon_entry],
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            timeout=5
-                        )
-                        if proc_fallback.returncode == 0 and _is_valid_image(proc_fallback.stdout):
-                            meta["icon_bytes"] = proc_fallback.stdout
+                    for target in icon_candidates:
+                        try:
+                            proc_i = subprocess.run(
+                                ["7z", "e", "-so", str(file_path), target],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                timeout=5,
+                            )
+                            if proc_i.returncode == 0:
+                                data = proc_i.stdout
+                                if _is_valid_image(data):
+                                    meta["icon_bytes"] = data
+                                    valid_icon = True
+                                    break
+                                # If payload is text pointing to a symlink destination
+                                if 0 < len(data) < 1024 and b"\x00" not in data:
+                                    sym_target = data.decode("utf-8", errors="ignore").strip().lstrip("./")
+                                    matched_target = None
+                                    for ap in all_archive_paths:
+                                        if ap == sym_target or ap.endswith(sym_target):
+                                            matched_target = ap
+                                            break
+                                    if matched_target:
+                                        proc_sym = subprocess.run(
+                                            ["7z", "e", "-so", str(file_path), matched_target],
+                                            stdout=subprocess.PIPE,
+                                            stderr=subprocess.PIPE,
+                                            timeout=5,
+                                        )
+                                        if proc_sym.returncode == 0 and _is_valid_image(proc_sym.stdout):
+                                            meta["icon_bytes"] = proc_sym.stdout
+                                            valid_icon = True
+                                            break
+                        except Exception:
+                            continue
             except Exception as e:
                 get_logger().debug(f"AppImage 7z extraction skipped: {e}")
 
@@ -574,34 +662,9 @@ class AppImageHandler(BaseHandler):
         return None
 
     def _save_icon(self, app_id: str, icon_bytes: Optional[bytes], appimage_path: Path) -> Optional[str]:
-        icons_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "scalable" / "apps"
-        icons_dir.mkdir(parents=True, exist_ok=True)
-
-        if icon_bytes and len(icon_bytes) >= 64 and (icon_bytes.startswith(b"\x89PNG") or b"<svg" in icon_bytes[:300].lower()):
-            # Detect whether svg or png
-            is_svg = b"<svg" in icon_bytes[:200].lower()
-            ext = ".svg" if is_svg else ".png"
-            if not is_svg:
-                icons_dir = Path.home() / ".local" / "share" / "icons" / "hicolor" / "128x128" / "apps"
-                icons_dir.mkdir(parents=True, exist_ok=True)
-
-            target_icon = icons_dir / f"{app_id}{ext}"
-            try:
-                target_icon.write_bytes(icon_bytes)
-                return str(target_icon)
-            except Exception:
-                pass
-
-        # Fallback: copy Dropin package icon
-        default_svg = Path(__file__).resolve().parent.parent / "assets" / "io.dropin.Dropin.svg"
-        if default_svg.is_file():
-            fallback_target = icons_dir / f"{app_id}.svg"
-            try:
-                shutil.copy2(default_svg, fallback_target)
-                return str(fallback_target)
-            except Exception:
-                pass
-        return None
+        if not icon_bytes:
+            return None
+        return save_application_icon(app_id=app_id, icon_bytes=icon_bytes)
 
     def _create_desktop_launcher(
         self,
@@ -610,38 +673,21 @@ class AppImageHandler(BaseHandler):
         exec_path: Path,
         icon_path: Optional[str],
         comment: str,
-        categories: str
+        categories: str,
+        startup_wm_class: str = "",
+        mime_types: str = "",
     ) -> Optional[Path]:
-        launchers_dir = Path.home() / ".local" / "share" / "applications"
-        launchers_dir.mkdir(parents=True, exist_ok=True)
-
-        launcher_path = launchers_dir / f"{app_id}.desktop"
-        icon_line = f"Icon={icon_path}\n" if icon_path else "Icon=application-x-executable\n"
-        if not categories.endswith(";"):
-            categories += ";"
-
-        content = (
-            "[Desktop Entry]\n"
-            "Type=Application\n"
-            f"Name={name}\n"
-            f"GenericName={name}\n"
-            f"Comment={comment}\n"
-            f'Exec="{exec_path}"\n'
-            f"{icon_line}"
-            "Terminal=false\n"
-            f"Categories={categories}\n"
-            "StartupNotify=true\n"
-            "X-Dropin-Managed=true\n"
+        return write_desktop_entry(
+            app_id=app_id,
+            name=name,
+            exec_path=exec_path,
+            icon_path=icon_path,
+            comment=comment,
+            generic_name=name,
+            categories=categories,
+            startup_wm_class=startup_wm_class,
+            mime_types=mime_types,
         )
-
-        try:
-            launcher_path.write_text(content, encoding="utf-8")
-            secure_file_permissions(str(launcher_path), is_executable=True)
-            self._update_desktop_db()
-            return launcher_path
-        except Exception as e:
-            get_logger().error(f"Failed to write desktop launcher: {e}")
-            return None
 
     def _update_desktop_db(self) -> None:
         from dropin.core.desktop import update_desktop_caches

@@ -70,6 +70,23 @@ class TestRegistry(unittest.TestCase):
         self.assertEqual(logs[0]["action"], "TEST_ACTION")
         self.assertEqual(logs[0]["target"], "TargetApp")
 
+    def test_sync_and_repair_cleans_stale_records(self):
+        # App with non-existent binary should be pruned during sync
+        app = InstalledApp(
+            id="dropin-appimage-ghost",
+            name="Ghost App",
+            version="1.0.0",
+            format="AppImage",
+            file_path="/tmp/does_not_exist_ghost_app.AppImage",
+            launcher_path="/tmp/does_not_exist_ghost_app.desktop",
+        )
+        self.registry.add_app(app)
+        self.assertIsNotNone(self.registry.get_app("dropin-appimage-ghost"))
+
+        repaired = self.registry.sync_and_repair_installed_apps()
+        self.assertGreaterEqual(repaired, 1)
+        self.assertIsNone(self.registry.get_app("dropin-appimage-ghost"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,12 +25,23 @@ def main():
         "--version", action="version", version=f"{__app_name__} {__version__}"
     )
     parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Synchronize registry, repair broken or leaked icons, and refresh desktop caches",
+    )
+    parser.add_argument(
         "target",
         nargs="?",
         help="Optional path to package file (.AppImage, .deb, .rpm, .flatpakref) or URL to install"
     )
 
     args = parser.parse_args()
+
+    if args.repair:
+        from dropin.core.registry import get_registry
+        repaired = get_registry().sync_and_repair_installed_apps()
+        print(f"Repaired and synchronized {repaired} application records.")
+        return 0
 
     # Enable high DPI scaling attributes if available
     QApplication.setApplicationName(__app_name__)

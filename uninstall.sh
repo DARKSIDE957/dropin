@@ -39,7 +39,7 @@ METAINFO_DIR="$PREFIX/share/metainfo"
 echo "Removing Dropin ($MODE)…"
 
 rm -f "$BIN_DIR/dropin"
-rm -rf "$APP_LIB_DIR" "$ALT_LIB_DIR"
+rm -rf "$APP_LIB_DIR" "$ALT_LIB_DIR" "$PREFIX/share/dropin/venv"
 rm -f "$DESKTOP_DIR/$APP_ID.desktop"
 rm -f "$ICON_DIR/$APP_ID.svg"
 rm -f "$METAINFO_DIR/$APP_ID.metainfo.xml"

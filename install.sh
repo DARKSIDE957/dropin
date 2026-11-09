@@ -80,59 +80,89 @@ fi
 PY_VER=$(python3 -c "import sys; print('.'.join(map(str, sys.version_info[:2])))")
 echo "     Python $PY_VER"
 
-echo -e "${BLUE}2/4  Installing requirements…${NC}"
+echo -e "${BLUE}2/4  Checking dependencies…${NC}"
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 if [ ! -f "$REQ_FILE" ]; then
     echo -e "${RED}requirements.txt not found next to install.sh${NC}"
     exit 1
 fi
 
-PIP_CMD=()
-if python3 -m pip --version >/dev/null 2>&1; then
-    PIP_CMD=(python3 -m pip)
-elif command -v pip3 >/dev/null 2>&1; then
-    PIP_CMD=(pip3)
+IS_ATOMIC=0
+if [ -e "/run/ostree-booted" ] || [ -d "/sysroot/ostree" ]; then
+    IS_ATOMIC=1
+fi
+
+VENV_DIR="$PREFIX/share/dropin/venv"
+
+if python3 -c "import PySide6, packaging" >/dev/null 2>&1; then
+    echo "     Dependencies ready (system environment)"
 else
-    echo -e "${RED}pip is not available.${NC}"
-    echo "Install python3-pip, then run ./install.sh again."
-    exit 1
-fi
+    echo "     Installing Python dependencies…"
+    INSTALLED_DEPS=0
 
-PIP_FLAGS=(install)
-if [ "$MODE" = "user" ]; then
-    PIP_FLAGS+=(--user)
-fi
-PIP_FLAGS+=(-r "$REQ_FILE")
+    # 1. Try pip directly if not on an atomic system
+    if [ "$IS_ATOMIC" -eq 0 ]; then
+        PIP_CMD=()
+        if python3 -m pip --version >/dev/null 2>&1; then
+            PIP_CMD=(python3 -m pip)
+        elif command -v pip3 >/dev/null 2>&1; then
+            PIP_CMD=(pip3)
+        fi
 
-if ! "${PIP_CMD[@]}" "${PIP_FLAGS[@]}"; then
-    echo -e "${YELLOW}pip install failed. Trying distribution packages as a fallback…${NC}"
-    if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get install -y python3-pyside6.qtwidgets python3-packaging 2>/dev/null \
-            || sudo apt-get install -y python3-pyside6 python3-packaging || true
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y python3-pyside6 python3-packaging || true
-    elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed --noconfirm python-pyside6 python-packaging || true
-    elif command -v zypper >/dev/null 2>&1; then
-        sudo zypper install -y python3-PySide6 python3-packaging || true
-    elif command -v apk >/dev/null 2>&1; then
-        sudo apk add pyside6 py3-packaging || true
-    elif command -v xbps-install >/dev/null 2>&1; then
-        sudo xbps-install -S python3-PySide6 python3-packaging || true
-    elif command -v urpmi >/dev/null 2>&1; then
-        sudo urpmi python3-pyside6 python3-packaging || true
+        if [ ${#PIP_CMD[@]} -gt 0 ]; then
+            PIP_FLAGS=(install)
+            if [ "$MODE" = "user" ]; then
+                PIP_FLAGS+=(--user)
+            fi
+            PIP_FLAGS+=(-r "$REQ_FILE")
+            if "${PIP_CMD[@]}" "${PIP_FLAGS[@]}" 2>/dev/null; then
+                INSTALLED_DEPS=1
+            fi
+        fi
     fi
-fi
 
-if ! python3 -c "import PySide6" >/dev/null 2>&1; then
-    echo -e "${RED}Could not install PySide6 automatically.${NC}"
-    echo "Install it with your package manager, for example:"
-    echo "  Debian/Ubuntu:  sudo apt install python3-pyside6"
-    echo "  Fedora:         sudo dnf install python3-pyside6"
-    echo "  Arch:           sudo pacman -S python-pyside6"
-    exit 1
+    # 2. For atomic systems (Bazzite, Silverblue) or PEP 668 environments, use an isolated venv
+    if [ "$INSTALLED_DEPS" -eq 0 ]; then
+        echo "     Creating isolated virtual environment for Dropin…"
+        mkdir -p "$(dirname "$VENV_DIR")"
+        if python3 -m venv --system-site-packages "$VENV_DIR" 2>/dev/null; then
+            if "$VENV_DIR/bin/pip" install -r "$REQ_FILE"; then
+                INSTALLED_DEPS=1
+            fi
+        fi
+    fi
+
+    # 3. Fallback to distribution package managers if not atomic and venv failed
+    if [ "$INSTALLED_DEPS" -eq 0 ] && [ "$IS_ATOMIC" -eq 0 ]; then
+        echo -e "${YELLOW}Trying distribution packages as a fallback…${NC}"
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get install -y python3-pyside6.qtwidgets python3-packaging 2>/dev/null \
+                || sudo apt-get install -y python3-pyside6 python3-packaging || true
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y python3-pyside6 python3-packaging || true
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -S --needed --noconfirm python-pyside6 python-packaging || true
+        elif command -v zypper >/dev/null 2>&1; then
+            sudo zypper install -y python3-PySide6 python3-packaging || true
+        elif command -v apk >/dev/null 2>&1; then
+            sudo apk add pyside6 py3-packaging || true
+        elif command -v xbps-install >/dev/null 2>&1; then
+            sudo xbps-install -S python3-PySide6 python3-packaging || true
+        elif command -v urpmi >/dev/null 2>&1; then
+            sudo urpmi python3-pyside6 python3-packaging || true
+        fi
+    fi
+
+    if ! python3 -c "import PySide6" >/dev/null 2>&1 && [ ! -x "$VENV_DIR/bin/python3" ]; then
+        echo -e "${RED}Could not install PySide6 automatically.${NC}"
+        echo "Install it with your package manager or Python venv, for example:"
+        echo "  Debian/Ubuntu:  sudo apt install python3-pyside6"
+        echo "  Fedora:         sudo dnf install python3-pyside6"
+        echo "  Arch:           sudo pacman -S python-pyside6"
+        exit 1
+    fi
+    echo "     Dependencies ready"
 fi
-echo "     Dependencies ready"
 
 echo -e "${BLUE}3/4  Copying Dropin…${NC}"
 mkdir -p "$BIN_DIR" "$APP_LIB_DIR" "$DESKTOP_DIR" "$ICON_DIR" "$METAINFO_DIR"
@@ -149,17 +179,25 @@ APP_DIR="$(cd "$SCRIPT_DIR/../lib/dropin" 2>/dev/null || cd "$SCRIPT_DIR/../shar
 if [ -d "$APP_DIR" ]; then
     export PYTHONPATH="$APP_DIR:$PYTHONPATH"
 fi
-exec python3 -m dropin "$@"
+VENV_PY="$SCRIPT_DIR/../share/dropin/venv/bin/python3"
+if [ -x "$VENV_PY" ]; then
+    exec "$VENV_PY" -m dropin "$@"
+else
+    exec python3 -m dropin "$@"
+fi
 EOF
 chmod +x "$BIN_DIR/dropin"
 
-echo -e "${BLUE}4/4  Registering app menu entry…${NC}"
+echo -e "${BLUE}4/4  Registering app menu entry and synchronizing registry…${NC}"
 sed "s|^Exec=dropin|Exec=$BIN_DIR/dropin|" "$SCRIPT_DIR/io.dropin.Dropin.desktop" > "$DESKTOP_DIR/$APP_ID.desktop"
 chmod 644 "$DESKTOP_DIR/$APP_ID.desktop"
 cp "$SCRIPT_DIR/dropin/assets/io.dropin.Dropin.svg" "$ICON_DIR/$APP_ID.svg"
 chmod 644 "$ICON_DIR/$APP_ID.svg"
 cp "$SCRIPT_DIR/io.dropin.Dropin.metainfo.xml" "$METAINFO_DIR/$APP_ID.metainfo.xml"
 chmod 644 "$METAINFO_DIR/$APP_ID.metainfo.xml"
+
+# Synchronize existing registry, repair any leaked icons, and refresh desktop caches
+"$BIN_DIR/dropin" --repair >/dev/null 2>&1 || true
 
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true

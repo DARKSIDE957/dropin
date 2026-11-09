@@ -375,6 +375,48 @@ class TestHandlers(unittest.TestCase):
         self.assertIn("MB", errors[0])
         self.assertNotIn("max_size_mb", errors[0])
 
+    def test_appimage_icon_never_falls_back_to_dropin_own_icon(self):
+        handler = AppImageHandler()
+        dummy_file = self.work_dir / "NoIconApp.AppImage"
+        dummy_file.touch()
+
+        # If icon_bytes is None, _save_icon must return None, NEVER Dropin's icon
+        saved = handler._save_icon("dropin-appimage-noiconapp", None, dummy_file)
+        self.assertIsNone(saved)
+
+    def test_appimage_symlinked_diricon_resolution(self):
+        handler = AppImageHandler()
+        dummy_file = self.work_dir / "SymlinkApp.AppImage"
+        dummy_file.touch()
+
+        real_png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x02\x00\x00\x00\x02\x00\x08\x06\x00\x00\x00" + b"\x00" * 32
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if cmd[1] == "l":
+                listing = (
+                    "Path = .DirIcon\n"
+                    "Path = myapp.desktop\n"
+                    "Path = usr/share/icons/hicolor/512x512/apps/myapp.png\n"
+                )
+                return _FakeProc(0, stdout=listing)
+            elif cmd[1] == "e":
+                target = cmd[4]
+                if target == "myapp.desktop":
+                    return _FakeProc(0, stdout="[Desktop Entry]\nName=MyApp\nIcon=myapp\n")
+                elif target == ".DirIcon":
+                    # Symlink pointing to the real icon
+                    return _FakeProc(0, stdout=b"usr/share/icons/hicolor/512x512/apps/myapp.png")
+                elif target == "usr/share/icons/hicolor/512x512/apps/myapp.png":
+                    return _FakeProc(0, stdout=real_png)
+            return _FakeProc(1, stdout="", stderr="not found")
+
+        with mock.patch("shutil.which", return_value="/usr/bin/7z"), mock.patch(
+            "subprocess.run", side_effect=fake_subprocess_run
+        ):
+            meta = handler._extract_appimage_metadata(dummy_file)
+            self.assertEqual(meta.get("Name"), "MyApp")
+            self.assertEqual(meta.get("icon_bytes"), real_png)
+
     def test_get_handlers_includes_new(self):
         handlers = get_handlers()
         names = {type(h).__name__ for h in handlers}

@@ -12,6 +12,7 @@ import hashlib
 import ipaddress
 import os
 import re
+import shutil
 import socket
 import urllib.parse
 from pathlib import Path
@@ -227,6 +228,45 @@ def is_safe_extract_path(dest_dir: Path, target_path: Path) -> bool:
         return resolved_dest in resolved_target.parents or resolved_target == resolved_dest
     except Exception:
         return False
+
+
+def check_disk_space(target_dir: Path, required_bytes: int, safety_multiplier: float = 1.5) -> Tuple[bool, str]:
+    """
+    Verify sufficient free disk space exists on the filesystem containing `target_dir`.
+    """
+    if required_bytes <= 0:
+        return True, ""
+    try:
+        probe = target_dir
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
+        usage = shutil.disk_usage(probe)
+        needed = int(required_bytes * safety_multiplier)
+        if usage.free < needed:
+            free_mb = usage.free // (1024 * 1024)
+            need_mb = needed // (1024 * 1024)
+            return False, (
+                f"Insufficient disk space in {probe}: {free_mb} MB available, "
+                f"at least {need_mb} MB required."
+            )
+    except Exception:
+        pass
+    return True, ""
+
+
+def check_directory_writable(target_dir: Path) -> Tuple[bool, str]:
+    """
+    Verify that `target_dir` (or its nearest existing ancestor) is writable by the current user.
+    """
+    try:
+        probe = target_dir
+        while not probe.exists() and probe.parent != probe:
+            probe = probe.parent
+        if not os.access(probe, os.W_OK | os.X_OK):
+            return False, f"Destination directory '{target_dir}' is not writable (permission denied)."
+    except Exception as e:
+        return False, f"Cannot access destination directory '{target_dir}': {e}"
+    return True, ""
 
 
 def validate_archive_members(member_names: List[str], dest_dir: Path) -> Tuple[bool, str]:
